@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>BullWiser State</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .error { color: red; font-weight: bold; }
+        .success { color: green; font-weight: bold; }
+        .info { background: #f0f0f0; padding: 10px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>BullWiser Application State Check</h1>
+    
+    <div id="checks">
+        <h2>System Checks:</h2>
+        <div id="server-check">Checking server...</div>
+        <div id="auth-check">Checking authentication...</div>
+        <div id="api-check">Checking API...</div>
+    </div>
+    
+    <h2>Current Error (if any):</h2>
+    <div id="error-display" class="info"></div>
+    
+    <script>
+        // Check server
+        fetch('/')
+            .then(res => {
+                document.getElementById('server-check').innerHTML = 
+                    res.ok ? '<span class="success">✓ Server is running</span>' : 
+                    '<span class="error">✗ Server error: ' + res.status + '</span>';
+            });
+            
+        // Check auth endpoint
+        fetch('/api/auth/user', {credentials: 'include'})
+            .then(res => {
+                if (res.status === 401) {
+                    document.getElementById('auth-check').innerHTML = 
+                        '<span class="info">User not logged in (401 - Expected)</span>';
+                } else if (res.ok) {
+                    document.getElementById('auth-check').innerHTML = 
+                        '<span class="success">✓ User is authenticated</span>';
+                } else {
+                    document.getElementById('auth-check').innerHTML = 
+                        '<span class="error">✗ Auth error: ' + res.status + '</span>';
+                }
+                return res.text();
+            })
+            .then(text => {
+                document.getElementById('error-display').innerHTML = 
+                    '<pre>Auth Response: ' + text + '</pre>';
+            });
+            
+        // Check API health
+        fetch('/api/market/overview')
+            .then(res => {
+                document.getElementById('api-check').innerHTML = 
+                    res.ok ? '<span class="success">✓ API is working</span>' : 
+                    '<span class="error">✗ API error: ' + res.status + '</span>';
+            });
+    </script>
+</body>
+</html>

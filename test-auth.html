@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<!-- Bug 26 fix: added lang attribute -->
+<html lang="en">
+<head>
+    <!-- Bug 26 fix: added charset and viewport meta tags -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auth Test</title>
+</head>
+<body>
+    <h1>BullWiser Authentication Test</h1>
+
+    <div id="status">Not logged in</div>
+
+    <div>
+        <h2>Login Test</h2>
+        <button onclick="testLogin()">Test Login</button>
+        <button onclick="checkAuth()">Check Auth Status</button>
+        <button onclick="testLogout()">Test Logout</button>
+    </div>
+
+    <div id="results"></div>
+
+    <script>
+        // Bug 24 fix: helper that safely renders text into a <pre> without using innerHTML,
+        // preventing XSS if server data contains HTML characters.
+        function showResult(text) {
+            const pre = document.createElement('pre');
+            pre.textContent = text;
+            const results = document.getElementById('results');
+            results.textContent = '';
+            results.appendChild(pre);
+        }
+
+        async function testLogin() {
+            // Bug 21 fix: was /api/login — correct endpoint is /api/auth/login.
+            const response = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    username: 'testuser',
+                    password: 'password123'
+                })
+            });
+
+            // Bug 23 fix: only call response.json() after confirming the response is OK
+            // (or at least JSON). Previously json() was called unconditionally, throwing
+            // SyntaxError when the server returned an HTML error page (e.g. on 404).
+            if (response.ok) {
+                const data = await response.json();
+                showResult(JSON.stringify(data, null, 2));
+                document.getElementById('status').textContent = 'Logged in as: ' + data.username;
+            } else {
+                // Bug 25 fix: show failure feedback to the user.
+                // Previously there was no else branch — the status div stayed unchanged.
+                let message = 'Login failed (' + response.status + ')';
+                try {
+                    const err = await response.json();
+                    if (err.message) message += ': ' + err.message;
+                } catch (_) {
+                    // server returned non-JSON; keep the status-code message
+                }
+                showResult(message);
+                document.getElementById('status').textContent = 'Not logged in';
+            }
+        }
+
+        async function checkAuth() {
+            const response = await fetch('/api/auth/user', {
+                credentials: 'include'
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                showResult(JSON.stringify(data, null, 2));
+                document.getElementById('status').textContent = 'Logged in as: ' + data.username;
+            } else {
+                showResult('Not authenticated');
+                document.getElementById('status').textContent = 'Not logged in';
+            }
+        }
+
+        async function testLogout() {
+            // Bug 22 fix: was /api/logout — correct endpoint is /api/auth/logout.
+            const response = await fetch('/api/auth/logout', {
+                method: 'POST',
+                credentials: 'include'
+            });
+
+            if (response.ok) {
+                document.getElementById('status').textContent = 'Logged out';
+                showResult('Logout successful');
+            } else {
+                showResult('Logout failed (' + response.status + ')');
+            }
+        }
+
+        // Check auth status on load
+        checkAuth();
+    </script>
+</body>
+</html>
