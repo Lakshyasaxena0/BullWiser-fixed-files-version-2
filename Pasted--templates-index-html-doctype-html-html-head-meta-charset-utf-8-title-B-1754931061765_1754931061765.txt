@@ -1,0 +1,159 @@
+<!-- templates/index.html -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>BullWiser Demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: Inter, Arial; background:#0F172A; color: #E6EEF8; margin:0; padding:20px; }
+    .card { background: #0b1220; border-radius:10px; padding:16px; margin-bottom:12px; box-shadow: 0 6px 18px rgba(0,0,0,0.6); }
+    label{display:block;margin-top:8px;color:#cfe8ff;font-size:13px}
+    select,input{width:100%;padding:8px;margin-top:6px;border-radius:8px;border:1px solid #2b3b52;background:#07102a;color:#fff}
+    button{background:#FFD700;color:#0F172A;border:none;padding:10px 14px;border-radius:8px;font-weight:700;cursor:pointer}
+    h1{font-size:20px;margin:0 0 8px 0}
+    .row{display:flex;gap:10px}
+    .col{flex:1}
+    .small{font-size:12px;color:#9fb9dd}
+    .green{color:#8EE29A}
+    .red{color:#FF8A8A}
+    .muted{color:#7fa7d8;font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>BullWiser (Demo preview)</h1>
+    <div class="small">Preview of prediction, billing, subscription, feedback and training simulator.</div>
+  </div>
+
+  <div class="card">
+    <label>Stock symbol</label>
+    <input id="stock" value="SUZLON" />
+    <div class="row">
+      <div class="col">
+        <label>Prediction date/time (ISO)</label>
+        <input id="when" placeholder="yyyy-mm-ddTHH:MM" value="" />
+        <div class="muted">Leave blank for now/UTC</div>
+      </div>
+      <div class="col">
+        <label>Mode</label>
+        <select id="mode"><option>suggestion</option><option>auto</option></select>
+        <label class="small">Trade type</label>
+        <select id="trade_type"><option value="low">low</option><option value="medium" selected>medium</option><option value="high">high</option></select>
+      </div>
+    </div>
+    <div style="margin-top:10px" class="row">
+      <div class="col">
+        <label>Trades per day</label>
+        <select id="trades_per_day"><option>2</option><option>5</option><option>7</option><option selected>10</option></select>
+      </div>
+      <div class="col">
+        <label>Duration</label>
+        <select id="duration"><option>daily</option><option>weekly</option><option selected>monthly</option><option>yearly</option></select>
+      </div>
+    </div>
+
+    <div style="margin-top:12px" class="row">
+      <div class="col">
+        <button onclick="estimateBilling()">Estimate Billing</button>
+      </div>
+      <div class="col">
+        <button onclick="makePrediction()">Get Prediction</button>
+      </div>
+    </div>
+
+    <div id="billingResult" class="muted" style="margin-top:12px"></div>
+    <div id="predictionResult" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h3>Training Simulator</h3>
+    <div class="muted">Simulates silent training progress (mock).</div>
+    <div style="margin-top:8px">
+      <button onclick="startTraining()">Start Training</button>
+      <button onclick="statusTraining()">Get Training Status</button>
+    </div>
+    <div id="trainingStatus" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <h3>Feedback</h3>
+    <label>Was this helpful?</label>
+    <select id="useful"><option value="yes">Yes</option><option value="no">No</option></select>
+    <label>Actual price at that time (optional)</label>
+    <input id="actual_price" placeholder="e.g., 62.25" />
+    <div style="margin-top:8px">
+      <button onclick="submitFeedback()">Submit Feedback</button>
+    </div>
+    <div id="fbmsg" style="margin-top:10px"></div>
+  </div>
+
+<script>
+async function estimateBilling(){
+  const payload = {
+    mode: document.getElementById('mode').value,
+    trade_type: document.getElementById('trade_type').value,
+    trades_per_day: parseInt(document.getElementById('trades_per_day').value),
+    duration: document.getElementById('duration').value,
+    referral_count: 0
+  };
+  const r = await fetch('/api/billing/estimate', {method:'POST',headers:{'content-type':'application/json'}, body: JSON.stringify(payload)});
+  const j = await r.json();
+  document.getElementById('billingResult').innerText = "Estimated final bill: ₹" + j.final_bill + "  (details: base ₹"+j.base_price+", duration discount "+j.duration_discount_applied+"%, auto surcharge ₹"+j.auto_mode_surcharge+")";
+}
+
+async function makePrediction(){
+  const stock = document.getElementById('stock').value;
+  const when = document.getElementById('when').value || 'now';
+  const res = await fetch('/api/predict', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({stock, when})});
+  const j = await res.json();
+  const out = `
+    <div><strong>Prediction for ${j.stock} at ${j.when}</strong></div>
+    <div>Current (sim): ₹${j.current_price}</div>
+    <div>Predicted range: ₹${j.pred_low} – ₹${j.pred_high}</div>
+    <div>Confidence: ${j.confidence}%</div>
+    <div class="small muted">(Astro bias applied hidden: ${j.astro_bias_applied})</div>
+    <div style="margin-top:6px">
+      <button onclick="savePlan('${j.stock}','${j.when}')">Save Trade Plan</button>
+    </div>
+  `;
+  document.getElementById('predictionResult').innerHTML = out;
+}
+
+async function savePlan(stock, when){
+  const payload = {
+    user:'demo_user',
+    mode: document.getElementById('mode').value,
+    trade_type: document.getElementById('trade_type').value,
+    trades_per_day: parseInt(document.getElementById('trades_per_day').value),
+    duration: document.getElementById('duration').value,
+    referral_count: 0
+  };
+  const r = await fetch('/api/subscribe', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload)});
+  const j = await r.json();
+  alert('Subscribed & invoice generated: ₹' + j.invoice.final_bill);
+}
+
+async function startTraining(){
+  await fetch('/api/training/start', {method:'POST'});
+  document.getElementById('trainingStatus').innerText = 'Training started... check status.';
+}
+
+async function statusTraining(){
+  const r = await fetch('/api/training/status');
+  const j = await r.json();
+  document.getElementById('trainingStatus').innerText = 'Progress: ' + j.progress + '% — ' + j.message;
+}
+
+async function submitFeedback(){
+  const useful = document.getElementById('useful').value;
+  const actual = document.getElementById('actual_price').value || null;
+  const when = document.getElementById('when').value || 'now';
+  const stock = document.getElementById('stock').value;
+  const r = await fetch('/api/feedback', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({stock, when, actual_price: actual, useful})});
+  const j = await r.json();
+  document.getElementById('fbmsg').innerText = 'Thanks — feedback saved.';
+}
+</script>
+</body>
+</html>
