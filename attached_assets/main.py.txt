@@ -1,0 +1,367 @@
+# main.py
+# Simple BullWiser preview app for Replit (mocked engine)
+# NOTE: This is a demo/prototype. Replace mocks with real data/APIs for production.
+
+from flask import Flask, render_template, request, jsonify, send_file
+from flask_cors import CORS
+import sqlite3
+import threading, time, math, io
+import numpy as np
+import pandas as pd
+import datetime
+import random
+
+app = Flask(__name__)
+CORS(app)
+
+DB = 'bullwiser_demo.db'
+
+########################
+# Utility / DB helpers
+########################
+def init_db():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    # subscriptions table
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user TEXT,
+        mode TEXT,
+        trade_type TEXT,
+        trades_per_day INTEGER,
+        duration TEXT,
+        start_ts INTEGER,
+        end_ts INTEGER,
+        price INTEGER
+    )
+    ''')
+    # feedback table
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stock TEXT,
+        requested_time TEXT,
+        actual_price REAL,
+        useful INTEGER,
+        submitted_at INTEGER
+    )
+    ''')
+    # training status
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS training_status (
+        id INTEGER PRIMARY KEY,
+        progress INTEGER,
+        message TEXT,
+        started_at INTEGER
+    )
+    ''')
+    # one row for training
+    c.execute("INSERT OR IGNORE INTO training_status (id, progress, message, started_at) VALUES (1, 0, 'Not started', 0)")
+    conn.commit()
+    conn.close()
+
+def db_exec(query, params=()):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute(query, params)
+    conn.commit()
+    last = c.lastrowid
+    rows = c.fetchall()
+    conn.close()
+    return last, rows
+
+init_db()
+
+########################
+# Billing logic (v3 - simplified)
+########################
+def calculate_bullwiser_price(mode, trade_type, trades_per_day, duration, referral_count=0):
+    # trade type flat rates
+    trade_type_rates = {
+        'low': 700,
+        'medium': 1400,
+        'high': 2100
+    }
+    rate_per_trade = trade_type_rates.get(trade_type, 700)
+    # base
+    base_price = rate_per_trade * trades_per_day
+    # duration discount
+    duration_discounts = {
+        'daily': 0.00,
+        'weekly': 0.05,
+        'monthly': 0.10,
+        'yearly': 0.20
+    }
+    duration_discount = duration_discounts.get(duration, 0.0)
+    discounted_price = base_price * (1 - duration_discount)
+    # referral discount
+    referral_discount = min(referral_count * 0.10, 0.50)
+    referral_discounted_price = discounted_price * (1 - referral_discount)
+    # auto mode surcharge (based on risk)
+    auto_mode_surcharge = 0
+    if mode == 'auto':
+        if trade_type == 'low':
+            auto_mode_surcharge = 150
+        elif trade_type == 'medium':
+            auto_mode_surcharge = 150 * 2
+        elif trade_type == 'high':
+            auto_mode_surcharge = 150 * 3
+    final_price = round(referral_discounted_price + auto_mode_surcharge)
+    return {
+        'mode': mode,
+        'trade_type': trade_type,
+        'trades_per_day': trades_per_day,
+        'duration': duration,
+        'base_price': base_price,
+        'after_duration_discount': round(discounted_price),
+        'after_referral_discount': round(referral_discounted_price),
+        'auto_mode_surcharge': auto_mode_surcharge,
+        'referral_discount_applied': int(referral_discount * 100),
+        'duration_discount_applied': int(duration_discount * 100),
+        'final_bill': final_price
+    }
+
+########################
+# Mock prediction engine
+########################
+def mock_technical_score(stock):
+    # quick mock: deterministic-ish by stock name hash + noise
+    seed = abs(hash(stock)) % 1000
+    base = (seed % 60) + 20  # 20..80
+    return base
+
+def astrology_hidden_bias(dt, stock):
+    # simple hidden astrology influence: returns -5..+5
+    # (in real system, call Drik Panchang API)
+    # use hour of day to simulate "hora"
+    h = dt.hour
+    bias = ((h * 7) % 11) - 5  # pseudo
+    # small stock-based adjust for determinism
+    bias += (abs(hash(stock)) % 3) - 1
+    return bias  # integer
+
+def predict_price(stock, when_dt, horizon='timed'):
+    """
+    Returns predicted price and confidence for given stock and datetime.
+    This is a MOCK: in production replace with live model inference.
+    """
+    # fetch a mock 'current price' (randomized per stock name)
+    base_current = 50 + (abs(hash(stock)) % 200) * 0.1  # 50..70ish etc
+    tech_score = mock_technical_score(stock)  # 0..100 style
+    # technical directional factor
+    direction = (tech_score - 50) / 50.0  # -1..+1
+    # time-of-day volatility multiplier
+    tod_mult = 1.0 + (abs(when_dt.hour - 13) / 48.0)
+    # astrology bias (hidden)
+    astro = astrology_hidden_bias(when_dt, stock) / 100.0  # -0.05..+0.05
+    # confidence base
+    confidence = min(max(45 + (tech_score - 50) * 0.6 + astro * 200, 15), 95)
+    # forecast delta as price points
+    # short forecast: small move; long-term stub: bigger move
+    if horizon == 'timed':
+        # predict +/- up to 3% based on direction
+        pct = direction * 0.8 * tod_mult + astro * 2.0
+        est_price = base_current * (1 + pct/100.0)
+        low = round(est_price * 0.995, 2)
+        high = round(est_price * 1.005, 2)
+    else:
+        # longer horizons: produce range band growing with horizon
+        if horizon == '6m':
+            band = 0.15
+        elif horizon == '1y':
+            band = 0.30
+        elif horizon == '3y':
+            band = 0.60
+        else:  # 5y
+            band = 1.0
+        center = base_current * (1 + direction*0.02 + astro*0.05)
+        low = round(center*(1-band), 2)
+        high = round(center*(1+band), 2)
+        confidence = max(confidence - band*20, 30)
+    return {
+        'stock': stock,
+        'when': when_dt.isoformat(),
+        'current_price': round(base_current,2),
+        'pred_low': low,
+        'pred_high': high,
+        'confidence': round(confidence,1),
+        'astro_bias_applied': bool(astro != 0)  # for internal logging only
+    }
+
+########################
+# Endpoints
+########################
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/billing/estimate', methods=['POST'])
+def api_billing_estimate():
+    data = request.json or {}
+    mode = data.get('mode','suggestion')
+    trade_type = data.get('trade_type','low')
+    trades_per_day = int(data.get('trades_per_day',2))
+    duration = data.get('duration','daily')
+    referral_count = int(data.get('referral_count',0))
+    res = calculate_bullwiser_price(mode, trade_type, trades_per_day, duration, referral_count)
+    return jsonify(res)
+
+@app.route('/api/predict', methods=['POST'])
+def api_predict():
+    data = request.json or {}
+    stock = data.get('stock','SUZLON')
+    timestr = data.get('when')  # ISO string or 'now'
+    if not timestr or timestr == 'now':
+        when = datetime.datetime.utcnow()
+    else:
+        try:
+            when = datetime.datetime.fromisoformat(timestr)
+        except:
+            # try simple parse
+            when = datetime.datetime.strptime(timestr, "%Y-%m-%dT%H:%M")
+    res = predict_price(stock, when, horizon='timed')
+    return jsonify(res)
+
+@app.route('/api/forecast', methods=['POST'])
+def api_forecast():
+    data = request.json or {}
+    stock = data.get('stock','TCS')
+    # produce 6m, 1y, 3y, 5y
+    now = datetime.datetime.utcnow()
+    out = {}
+    for h in ['6m','1y','3y','5y']:
+        out[h] = predict_price(stock, now, horizon=h)
+        # add pct change from current price:
+        curr = out[h]['current_price']
+        mid = (out[h]['pred_low'] + out[h]['pred_high'])/2.0
+        pct = (mid - curr)/curr*100.0
+        out[h]['pct_change'] = round(pct,2)
+    return jsonify(out)
+
+@app.route('/api/subscribe', methods=['POST'])
+def api_subscribe():
+    data = request.json or {}
+    user = data.get('user','demo_user')
+    mode = data.get('mode','suggestion')
+    trade_type = data.get('trade_type','low')
+    trades_per_day = int(data.get('trades_per_day',2))
+    duration = data.get('duration','monthly')
+    referral_count = int(data.get('referral_count',0))
+    bill = calculate_bullwiser_price(mode, trade_type, trades_per_day, duration, referral_count)
+    start_ts = int(time.time())
+    # approx duration end
+    if duration == 'daily':
+        end_ts = start_ts + 86400
+    elif duration == 'weekly':
+        end_ts = start_ts + 7*86400
+    elif duration == 'monthly':
+        end_ts = start_ts + 30*86400
+    else:
+        end_ts = start_ts + 365*86400
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('INSERT INTO subscriptions (user, mode, trade_type, trades_per_day, duration, start_ts, end_ts, price) VALUES (?,?,?,?,?,?,?,?)',
+              (user, mode, trade_type, trades_per_day, duration, start_ts, end_ts, bill['final_bill']))
+    conn.commit()
+    conn.close()
+    return jsonify({'status':'ok','invoice': bill})
+
+@app.route('/api/feedback', methods=['POST'])
+def api_feedback():
+    data = request.json or {}
+    stock = data.get('stock','UNKNOWN')
+    when = data.get('when','')
+    actual_price = data.get('actual_price', None)
+    useful = 1 if data.get('useful','yes') in ['yes', 'true', True] else 0
+    ts = int(time.time())
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('INSERT INTO feedback (stock, requested_time, actual_price, useful, submitted_at) VALUES (?,?,?,?,?)',
+              (stock, when, actual_price, useful, ts))
+    conn.commit()
+    conn.close()
+    return jsonify({'status':'ok'})
+
+########################
+# Training simulator (runs in background)
+########################
+training_lock = threading.Lock()
+training_thread = None
+
+def training_worker():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('UPDATE training_status SET progress=?, message=?, started_at=? WHERE id=1', (0, 'Starting', int(time.time())))
+    conn.commit()
+    total = 2000
+    processed = 0
+    sectors = 10
+    per_sector = total // sectors
+    for sector in range(sectors):
+        # simulate per-sector work
+        for i in range(per_sector):
+            time.sleep(0.01)  # speed of demo
+            processed += 1
+            prog = int(processed / total * 100)
+            if prog % 5 == 0:
+                c.execute('UPDATE training_status SET progress=?, message=? WHERE id=1', (prog, f'Processing sector {sector+1} ({i+1}/{per_sector})'))
+                conn.commit()
+        # small pause between sectors
+        time.sleep(0.3)
+    c.execute('UPDATE training_status SET progress=?, message=? WHERE id=1', (100, 'Completed'))
+    conn.commit()
+    conn.close()
+
+@app.route('/api/training/start', methods=['POST'])
+def start_training():
+    global training_thread
+    with training_lock:
+        if training_thread and training_thread.is_alive():
+            return jsonify({'status':'running'})
+        training_thread = threading.Thread(target=training_worker, daemon=True)
+        training_thread.start()
+        return jsonify({'status':'started'})
+
+@app.route('/api/training/status')
+def training_status():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('SELECT progress, message, started_at FROM training_status WHERE id=1')
+    r = c.fetchone()
+    conn.close()
+    if not r:
+        return jsonify({'progress':0,'message':'not started'})
+    return jsonify({'progress': r[0], 'message': r[1], 'started_at': r[2]})
+
+########################
+# Simple invoice endpoint (returns JSON)
+########################
+@app.route('/api/invoice/<int:sub_id>')
+def api_invoice(sub_id):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('SELECT user, mode, trade_type, trades_per_day, duration, start_ts, end_ts, price FROM subscriptions WHERE id=?', (sub_id,))
+    r = c.fetchone()
+    conn.close()
+    if not r:
+        return jsonify({'error':'not found'}), 404
+    invoice = {
+        'user': r[0],
+        'mode': r[1],
+        'trade_type': r[2],
+        'trades_per_day': r[3],
+        'duration': r[4],
+        'start': datetime.datetime.utcfromtimestamp(r[5]).isoformat(),
+        'end': datetime.datetime.utcfromtimestamp(r[6]).isoformat(),
+        'price': r[7]
+    }
+    return jsonify(invoice)
+
+########################
+# Run
+########################
+if __name__ == '__main__':
+    print("Starting BullWiser demo server... (http://localhost:5000)")
+    app.run(host='0.0.0.0', port=5000, debug=True)
