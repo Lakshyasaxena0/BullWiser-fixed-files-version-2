@@ -1,13 +1,9 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-const API_BASE = (import.meta.env.VITE_API_URL as string) ?? "";
-
-function resolveUrl(path: string): string {
-  if (API_BASE && path.startsWith("/api")) {
-    return `${API_BASE}${path}`;
-  }
-  return path;
-}
+// API calls always use relative /api/* paths.
+// On Replit: same origin, works directly.
+// On Netlify: the netlify.toml proxy rule forwards /api/* to Render backend.
+// This means NO cross-origin requests, NO CORS issues, NO env vars needed.
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -21,7 +17,7 @@ export async function apiRequest(
   url: string,
   data?: unknown,
 ): Promise<Response> {
-  const res = await fetch(resolveUrl(url), {
+  const res = await fetch(url, {
     method,
     headers: data ? { "Content-Type": "application/json" } : {},
     body: data ? JSON.stringify(data) : undefined,
@@ -38,20 +34,16 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const url = resolveUrl(queryKey[0] as string);
+    const url = queryKey[0] as string;
 
     let res: Response;
     try {
-      res = await fetch(url, {
-        credentials: "include",
-      });
+      res = await fetch(url, { credentials: "include" });
     } catch (networkError) {
       if (unauthorizedBehavior === "returnNull") {
         return null as T;
       }
-      throw new Error(
-        `Network error reaching ${url}. Is the backend server running?`,
-      );
+      throw new Error(`Network error reaching ${url}.`);
     }
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
