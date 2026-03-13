@@ -24,11 +24,9 @@ pool.on('error', (err) => {
 export const db = drizzle({ client: pool, schema });
 
 // ─── Retry wrapper ────────────────────────────────────────────────────────────
-// Catches Neon "endpoint disabled" errors and retries with increasing delays.
-// ─────────────────────────────────────────────────────────────────────────────
 export async function withRetry<T>(
   operation: () => Promise<T>,
-  maxRetries = 5,
+  maxRetries = 8,
   delayMs = 2000,
 ): Promise<T> {
   let lastError: Error | null = null;
@@ -58,25 +56,21 @@ export async function withRetry<T>(
 }
 
 // ─── Heartbeat ────────────────────────────────────────────────────────────────
-// Pings Neon every 4 minutes to prevent auto-suspension.
-// Neon free tier suspends after 5 minutes of inactivity — this keeps it awake.
+// Uses withRetry so it keeps trying until Neon actually wakes up on startup.
 // ─────────────────────────────────────────────────────────────────────────────
-const HEARTBEAT_INTERVAL = 4 * 60 * 1000; // 4 minutes
-
 async function pingDatabase() {
   try {
-    await pool.query('SELECT 1');
+    await withRetry(() => pool.query('SELECT 1'), 10, 3000);
     console.log('[DB] Heartbeat OK — Neon is awake');
   } catch (err) {
-    console.warn('[DB] Heartbeat failed — Neon may be suspended:', (err as Error).message);
+    console.warn('[DB] Heartbeat failed after all retries:', (err as Error).message);
   }
 }
 
-// Start heartbeat only in production (not during local dev)
 if (process.env.NODE_ENV === 'production') {
-  // Initial ping on startup to wake Neon immediately
-  setTimeout(pingDatabase, 5000);
-  // Then ping every 4 minutes
-  setInterval(pingDatabase, HEARTBEAT_INTERVAL);
   console.log('[DB] Neon heartbeat started (every 4 minutes)');
+  // Wake Neon on startup — keeps retrying until it comes online
+  pingDatabase();
+  // Then keep it awake every 4 minutes
+  setInterval(pingDatabase, 4 * 60 * 1000);
 }
