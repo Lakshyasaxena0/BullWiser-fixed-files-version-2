@@ -23,7 +23,7 @@ const app = express();
 // ─────────────────────────────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
   // Netlify production domain
-  "https://bullwiser.netlify.app",
+  "https://bullwiser-fixed-files-version-2.netlify.app",
   // Allow any Netlify deploy-preview URL for this site
   /^https:\/\/[a-z0-9-]+--bullwiser\.netlify\.app$/,
   // Replit dev URLs (for local development)
