@@ -7,6 +7,7 @@ import { promisify } from "util";
 import { storage } from "./storage";
 import { User as SelectUser } from "@shared/schema";
 import connectPg from "connect-pg-simple";
+import { pool, withRetry } from "./db";
 
 declare global {
   namespace Express {
@@ -32,16 +33,11 @@ async function comparePasswords(supplied: string, stored: string) {
 export function setupAuth(app: Express) {
   const PostgresSessionStore = connectPg(session);
   const sessionStore = new PostgresSessionStore({ 
-    conString: process.env.DATABASE_URL,
+    pool,
     createTableIfMissing: true,
     tableName: "sessions",
   });
 
-  // Cross-origin cookie requirements (Netlify frontend → Render backend):
-  // - sameSite: "none"  → required for cookies to be sent cross-origin
-  // - secure: true      → required whenever sameSite is "none" (HTTPS only)
-  // Without these, the browser silently drops the session cookie and every
-  // request looks unauthenticated even after a successful login.
   const isProduction = process.env.NODE_ENV === "production";
 
   const sessionSettings: session.SessionOptions = {
@@ -51,9 +47,9 @@ export function setupAuth(app: Express) {
     store: sessionStore,
     cookie: {
       httpOnly: true,
-      secure: isProduction,           // true on Render (HTTPS), false on local
-      sameSite: isProduction ? "none" : "lax", // "none" required for cross-origin
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     }
   };
 
@@ -64,70 +60,79 @@ export function setupAuth(app: Express) {
 
   passport.use(
     new LocalStrategy(async (username, password, done) => {
-      const user = await storage.getUserByUsername(username);
-      if (!user || !(await comparePasswords(password, user.password))) {
-        return done(null, false);
-      } else {
+      try {
+        const user = await withRetry(() => storage.getUserByUsername(username));
+        if (!user || !(await comparePasswords(password, user.password))) {
+          return done(null, false);
+        }
         return done(null, user);
+      } catch (err) {
+        return done(err);
       }
     }),
   );
 
   passport.serializeUser((user, done) => done(null, user.id));
+  
   passport.deserializeUser(async (id: string, done) => {
     try {
-      const user = await storage.getUser(id);
-      if (!user) {
-        console.log("User not found for deserialization, clearing session:", id);
-        done(null, false);
-        return;
-      }
+      const user = await withRetry(() => storage.getUser(id));
+      if (!user) { done(null, false); return; }
       done(null, user);
     } catch (error) {
-      console.log("User deserialization failed, clearing session:", error);
+      console.log("User deserialization failed:", error);
       done(null, false);
     }
   });
 
   app.post("/api/register", async (req, res, next) => {
-    const { username, password, confirmPassword, email, firstName, lastName } = req.body;
+    try {
+      const { username, password, confirmPassword, email, firstName, lastName } = req.body;
 
-    if (!username || !password) {
-      return res.status(400).json({ message: "Username and password are required" });
+      if (!username || !password) {
+        return res.status(400).json({ message: "Username and password are required" });
+      }
+      if (password !== confirmPassword) {
+        return res.status(400).json({ message: "Passwords do not match" });
+      }
+      if (password.length < 6) {
+        return res.status(400).json({ message: "Password must be at least 6 characters long" });
+      }
+
+      const existingUser = await withRetry(() => storage.getUserByUsername(username));
+      if (existingUser) {
+        return res.status(400).json({ message: "Username already exists" });
+      }
+
+      const hashedPw = await hashPassword(password);
+      const newUser = await withRetry(() => storage.createUser({
+        username,
+        password: hashedPw,
+        email,
+        firstName,
+        lastName,
+      }));
+
+      req.login(newUser, (err) => {
+        if (err) return next(err);
+        const { password: _, ...userWithoutPassword } = newUser;
+        res.status(201).json(userWithoutPassword);
+      });
+    } catch (err) {
+      next(err);
     }
-
-    if (password !== confirmPassword) {
-      return res.status(400).json({ message: "Passwords do not match" });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters long" });
-    }
-
-    const existingUser = await storage.getUserByUsername(username);
-    if (existingUser) {
-      return res.status(400).json({ message: "Username already exists" });
-    }
-
-    const user = await storage.createUser({
-      username,
-      password: await hashPassword(password),
-      email,
-      firstName,
-      lastName,
-    });
-
-    req.login(user, (err) => {
-      if (err) return next(err);
-      const { password, ...userWithoutPassword } = user;
-      res.status(201).json(userWithoutPassword);
-    });
   });
 
-  app.post("/api/login", passport.authenticate("local"), (req, res) => {
-    const user = req.user as SelectUser;
-    const { password, ...userWithoutPassword } = user;
-    res.status(200).json(userWithoutPassword);
+  app.post("/api/login", (req, res, next) => {
+    passport.authenticate("local", (err: any, user: any) => {
+      if (err) return next(err);
+      if (!user) return res.status(401).json({ message: "Invalid username or password" });
+      req.login(user, (err) => {
+        if (err) return next(err);
+        const { password, ...userWithoutPassword } = user;
+        res.status(200).json(userWithoutPassword);
+      });
+    })(req, res, next);
   });
 
   app.post("/api/logout", (req, res, next) => {
@@ -146,8 +151,6 @@ export function setupAuth(app: Express) {
 }
 
 export const isAuthenticated = (req: any, res: any, next: any) => {
-  if (req.isAuthenticated()) {
-    return next();
-  }
+  if (req.isAuthenticated()) return next();
   res.status(401).json({ message: "Unauthorized" });
 };
