@@ -37,6 +37,13 @@ export function setupAuth(app: Express) {
     tableName: "sessions",
   });
 
+  // Cross-origin cookie requirements (Netlify frontend → Render backend):
+  // - sameSite: "none"  → required for cookies to be sent cross-origin
+  // - secure: true      → required whenever sameSite is "none" (HTTPS only)
+  // Without these, the browser silently drops the session cookie and every
+  // request looks unauthenticated even after a successful login.
+  const isProduction = process.env.NODE_ENV === "production";
+
   const sessionSettings: session.SessionOptions = {
     secret: process.env.SESSION_SECRET || "bullwiser-secret-key-" + randomBytes(16).toString("hex"),
     resave: false,
@@ -44,8 +51,8 @@ export function setupAuth(app: Express) {
     store: sessionStore,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "strict" : "lax",
+      secure: isProduction,           // true on Render (HTTPS), false on local
+      sameSite: isProduction ? "none" : "lax", // "none" required for cross-origin
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     }
   };
@@ -85,7 +92,6 @@ export function setupAuth(app: Express) {
   app.post("/api/register", async (req, res, next) => {
     const { username, password, confirmPassword, email, firstName, lastName } = req.body;
 
-    // Validate inputs
     if (!username || !password) {
       return res.status(400).json({ message: "Username and password are required" });
     }
