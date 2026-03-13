@@ -1,78 +1,32 @@
-# netlify.toml — BullWiser Netlify deployment configuration
-#
-# This is a Vite + React + Express project.
-# Netlify hosts ONLY the compiled frontend (static files).
-# The Express backend must run on a separate server (Railway, Render, Fly.io).
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# HOW THIS BUILD WORKS
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Netlify runs: npm ci          (installs ALL deps including devDependencies)
-# 2. Netlify runs: npm run build:client  (= "vite build")
-# 3. Vite reads vite.config.ts, builds React app, writes to dist/public/
-# 4. Netlify serves the files from dist/public/ as a static site
-# 5. Redirect rules below make the SPA router (wouter) work correctly
-#
-# ⚠  IMPORTANT — Why we do NOT set NODE_ENV=production here:
-#    When NODE_ENV=production, npm ci SKIPS all devDependencies during install.
-#    Our devDependencies include vite, esbuild, tailwindcss, typescript and
-#    every other build tool. Without them the build fails immediately with
-#    "sh: vite: not found". Vite automatically sets NODE_ENV=production
-#    *inside* the compiled bundle when you run `vite build`, so React and
-#    other libs still receive production-optimised builds.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── Build settings ─────────────────────────────────────────────────────────────
 [build]
-  # "build:client" = "vite build" (defined in package.json scripts).
-  # We use this instead of the full "build" script, which also runs esbuild
-  # on server/index.ts — pointless on a static host and risky if server-side
-  # env vars (DATABASE_URL etc.) are not set during Netlify's build phase.
   command = "npm run build:client"
-
-  # Must match vite.config.ts → build.outDir exactly.
-  #   vite.config.ts:  outDir: path.resolve(__dirname, "dist/public")
-  #   __dirname = project root (location of vite.config.ts)
-  #   Therefore outDir = <project-root>/dist/public
   publish = "dist/public"
 
-# ── Build environment ──────────────────────────────────────────────────────────
 [build.environment]
-  # Pin Node.js to the same major version used on Replit (nodejs-20 module).
-  # Without this Netlify may pick a different version and produce subtle errors.
   NODE_VERSION = "20"
 
-# ── Context: pull-request preview deploys ─────────────────────────────────────
 [context.deploy-preview]
   command = "npm run build:client"
 
-# ── Context: branch deploys (non-main branches) ───────────────────────────────
 [context.branch-deploy]
   command = "npm run build:client"
 
-# ── Redirects ──────────────────────────────────────────────────────────────────
-# Netlify evaluates redirect rules TOP-TO-BOTTOM and stops at the first match.
-
-# Rule 1 — /api/* paths return 404 immediately.
-#   This is a static site — the Express server is not running on Netlify.
-#   Without this rule the catch-all below would silently return index.html
-#   for every API request, making errors invisible to the frontend.
+# ── Proxy API calls to Render backend ─────────────────────────────────────────
+# This completely eliminates CORS. The browser calls /api/* on Netlify,
+# Netlify forwards the request to Render, returns the response.
+# From the browser's perspective it's always the same origin — no CORS needed.
 [[redirects]]
   from   = "/api/*"
-  to     = "/404.html"
-  status = 404
+  to     = "https://bullwiser-fixed-files-version-2-backend.onrender.com/api/:splat"
+  status = 200
+  force  = true
 
-# Rule 2 — SPA catch-all: every other path → index.html (status 200 = rewrite).
-#   Required for wouter (client-side router) to handle deep links and refreshes.
-#   A browser visiting /dashboard gets index.html; wouter reads the URL and
-#   renders the correct page. Without this rule every route except "/" 404s.
+# SPA catch-all
 [[redirects]]
   from   = "/*"
   to     = "/index.html"
   status = 200
 
-# ── Security headers ───────────────────────────────────────────────────────────
-# Applied to every response from Netlify's CDN edge nodes.
 [[headers]]
   for = "/*"
   [headers.values]
@@ -81,8 +35,6 @@
     Referrer-Policy        = "strict-origin-when-cross-origin"
     Permissions-Policy     = "camera=(), microphone=(), geolocation=()"
 
-# Long-term cache for compiled assets — safe because Vite appends content
-# hashes to filenames (e.g. index-Bx3kQ91m.js), so stale cache is impossible.
 [[headers]]
   for = "/assets/*"
   [headers.values]
