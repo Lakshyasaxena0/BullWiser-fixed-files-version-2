@@ -7,10 +7,15 @@ if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set.");
 }
 
+// Using Supabase connection pooler (port 6543)
+// Add ?pgbouncer=true to the URL for compatibility
+const connectionString = process.env.DATABASE_URL.includes('?') 
+  ? process.env.DATABASE_URL 
+  : process.env.DATABASE_URL + '?pgbouncer=true';
+
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString,
   ssl: { rejectUnauthorized: false },
-  family: 4, // Force IPv4 — prevents ENETUNREACH on IPv6
   max: 10,
   idleTimeoutMillis: 60000,
   connectionTimeoutMillis: 30000,
