@@ -1,10 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-// API calls always use relative /api/* paths.
-// On Replit: same origin, works directly.
-// On Netlify: the netlify.toml proxy rule forwards /api/* to Render backend.
-// This means NO cross-origin requests, NO CORS issues, NO env vars needed.
-
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -12,19 +7,49 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+// Retries on 502/504 (Neon waking up) up to 4 times with 5s delay
 export async function apiRequest(
   method: string,
   url: string,
   data?: unknown,
 ): Promise<Response> {
-  const res = await fetch(url, {
-    method,
-    headers: data ? { "Content-Type": "application/json" } : {},
-    body: data ? JSON.stringify(data) : undefined,
-    credentials: "include",
-  });
-  await throwIfResNotOk(res);
-  return res;
+  const maxRetries = 4;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: data ? { "Content-Type": "application/json" } : {},
+        body: data ? JSON.stringify(data) : undefined,
+        credentials: "include",
+      });
+
+      // Retry on gateway errors (Neon/Render waking up)
+      if ((res.status === 502 || res.status === 504) && attempt < maxRetries) {
+        console.log(`[API] Got ${res.status}, retrying (${attempt}/${maxRetries}) in 5s...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        continue;
+      }
+
+      await throwIfResNotOk(res);
+      return res;
+    } catch (err: any) {
+      lastError = err;
+      // Only retry on network/timeout errors
+      if (attempt < maxRetries && (
+        err.message?.includes("504") ||
+        err.message?.includes("502") ||
+        err.message?.includes("Failed to fetch")
+      )) {
+        console.log(`[API] Request failed, retrying (${attempt}/${maxRetries}) in 5s...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";
@@ -40,19 +65,12 @@ export const getQueryFn: <T>(options: {
     try {
       res = await fetch(url, { credentials: "include" });
     } catch (networkError) {
-      if (unauthorizedBehavior === "returnNull") {
-        return null as T;
-      }
+      if (unauthorizedBehavior === "returnNull") return null as T;
       throw new Error(`Network error reaching ${url}.`);
     }
 
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      return null as T;
-    }
-
-    if (!res.ok && unauthorizedBehavior === "returnNull") {
-      return null as T;
-    }
+    if (unauthorizedBehavior === "returnNull" && res.status === 401) return null as T;
+    if (!res.ok && unauthorizedBehavior === "returnNull") return null as T;
 
     await throwIfResNotOk(res);
     return await res.json() as T;
