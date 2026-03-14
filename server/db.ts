@@ -1,29 +1,37 @@
-import { Pool, neonConfig } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-serverless';
-import ws from "ws";
+import { neon, neonConfig } from '@neondatabase/serverless';
+import { drizzle } from 'drizzle-orm/neon-http';
 import * as schema from "@shared/schema";
 
-neonConfig.webSocketConstructor = ws;
-neonConfig.fetchConnectionCache = true;
+// Use HTTP driver instead of WebSocket Pool.
+// HTTP driver handles Neon cold starts automatically — each query is a fresh
+// HTTP request that wakes the endpoint if needed. No more "endpoint disabled" errors.
+neonConfig.fetchEndpoint = (host) => {
+  return `https://${host}/sql`;
+};
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set. Did you forget to provision a database?");
 }
 
+const sql = neon(process.env.DATABASE_URL);
+export const db = drizzle(sql, { schema });
+
+// Keep pool export for session store (connect-pg-simple needs it)
+import { Pool } from '@neondatabase/serverless';
+import ws from "ws";
+neonConfig.webSocketConstructor = ws;
+
 export const pool = new Pool({ 
   connectionString: process.env.DATABASE_URL,
-  max: 10,
-  idleTimeoutMillis: 30000,
+  max: 3,
   connectionTimeoutMillis: 30000,
 });
 
 pool.on('error', (err) => {
-  console.error('Database pool error:', err);
+  console.error('Session pool error:', err);
 });
 
-export const db = drizzle({ client: pool, schema });
-
-// ─── Retry wrapper ────────────────────────────────────────────────────────────
+// withRetry only needed for session store pool now
 export async function withRetry<T>(
   operation: () => Promise<T>,
   maxRetries = 8,
@@ -55,22 +63,18 @@ export async function withRetry<T>(
   throw lastError;
 }
 
-// ─── Heartbeat ────────────────────────────────────────────────────────────────
-// Uses withRetry so it keeps trying until Neon actually wakes up on startup.
-// ─────────────────────────────────────────────────────────────────────────────
+// Heartbeat to keep Neon warm
 async function pingDatabase() {
   try {
-    await withRetry(() => pool.query('SELECT 1'), 10, 3000);
+    await sql`SELECT 1`;
     console.log('[DB] Heartbeat OK — Neon is awake');
   } catch (err) {
-    console.warn('[DB] Heartbeat failed after all retries:', (err as Error).message);
+    console.warn('[DB] Heartbeat ping failed:', (err as Error).message);
   }
 }
 
 if (process.env.NODE_ENV === 'production') {
   console.log('[DB] Neon heartbeat started (every 4 minutes)');
-  // Wake Neon on startup — keeps retrying until it comes online
   pingDatabase();
-  // Then keep it awake every 4 minutes
   setInterval(pingDatabase, 4 * 60 * 1000);
 }
