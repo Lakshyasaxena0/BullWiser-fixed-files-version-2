@@ -1,4 +1,5 @@
-import { Pool } from 'pg';
+import pkg from 'pg';
+const { Pool } = pkg;
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from "@shared/schema";
 
@@ -6,10 +7,9 @@ if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set.");
 }
 
-// Standard pg Pool — works with Supabase (never suspends on free tier)
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }, // Required for Supabase SSL
+  ssl: { rejectUnauthorized: false },
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
@@ -21,7 +21,6 @@ pool.on('error', (err) => {
 
 export const db = drizzle(pool, { schema });
 
-// Simple retry for transient errors only
 export async function withRetry<T>(
   operation: () => Promise<T>,
   maxRetries = 3,
