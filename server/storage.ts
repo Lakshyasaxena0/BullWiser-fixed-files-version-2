@@ -63,7 +63,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserSubscriptions(userId: string): Promise<Subscription[]> {
-    return await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)).orderBy(desc(subscriptions.createdAt));
+    return await db.select().from(subscriptions)
+      .where(eq(subscriptions.userId, userId))
+      .orderBy(desc(subscriptions.createdAt));
   }
 
   async getSubscription(id: number): Promise<Subscription | undefined> {
@@ -77,7 +79,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserFeedback(userId: string): Promise<Feedback[]> {
-    return await db.select().from(feedback).where(eq(feedback.userId, userId)).orderBy(desc(feedback.submittedAt));
+    return await db.select().from(feedback)
+      .where(eq(feedback.userId, userId))
+      .orderBy(desc(feedback.submittedAt));
   }
 
   async createPrediction(prediction: InsertPrediction): Promise<Prediction> {
@@ -86,7 +90,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserPredictions(userId: string): Promise<Prediction[]> {
-    return await db.select().from(predictions).where(eq(predictions.userId, userId)).orderBy(desc(predictions.createdAt));
+    return await db.select().from(predictions)
+      .where(eq(predictions.userId, userId))
+      .orderBy(desc(predictions.createdAt));
   }
 
   async getUserActivePredictions(userId: string): Promise<Prediction[]> {
@@ -105,17 +111,21 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserWatchlist(userId: string): Promise<WatchlistItem[]> {
-    return await db.select().from(watchlist).where(eq(watchlist.userId, userId)).orderBy(desc(watchlist.createdAt));
+    return await db.select().from(watchlist)
+      .where(eq(watchlist.userId, userId))
+      .orderBy(desc(watchlist.createdAt));
   }
 
   async removeFromWatchlist(userId: string, stock: string): Promise<void> {
-    await db.delete(watchlist).where(and(eq(watchlist.userId, userId), eq(watchlist.stock, stock)));
+    await db.delete(watchlist)
+      .where(and(eq(watchlist.userId, userId), eq(watchlist.stock, stock)));
   }
 
   async updateTrainingStatus(progress: number, message: string, startedAt?: number): Promise<void> {
     const updateData: any = { progress, message };
     if (startedAt) updateData.startedAt = startedAt;
-    await db.insert(trainingStatus).values({ id: 1, ...updateData })
+    await db.insert(trainingStatus)
+      .values({ id: 1, ...updateData })
       .onConflictDoUpdate({ target: trainingStatus.id, set: updateData });
   }
 
