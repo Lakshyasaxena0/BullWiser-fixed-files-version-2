@@ -208,7 +208,15 @@ async function runTrainingSimulation() {
 export function registerRoutes(app: Express): Server {
   // Auth middleware
   setupAuth(app);
-
+// Warmup endpoint — wakes Neon before user registers
+  app.get('/api/warmup', async (req, res) => {
+    try {
+      await storage.getTrainingStatus();
+      res.json({ status: 'ready' });
+    } catch (err) {
+      res.status(503).json({ status: 'waking' });
+    }
+  });
   // Auth routes
   app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
     try {
