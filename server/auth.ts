@@ -7,7 +7,7 @@ import { promisify } from "util";
 import { storage } from "./storage";
 import { User as SelectUser } from "@shared/schema";
 import connectPg from "connect-pg-simple";
-import { pool, withRetry } from "./db";
+import { pool } from "./db";
 
 declare global {
   namespace Express {
@@ -25,6 +25,7 @@ async function hashPassword(password: string) {
 
 async function comparePasswords(supplied: string, stored: string) {
   const [hashed, salt] = stored.split(".");
+  if (!hashed || !salt) return false;
   const hashedBuf = Buffer.from(hashed, "hex");
   const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
   return timingSafeEqual(hashedBuf, suppliedBuf);
@@ -32,7 +33,7 @@ async function comparePasswords(supplied: string, stored: string) {
 
 export function setupAuth(app: Express) {
   const PostgresSessionStore = connectPg(session);
-  const sessionStore = new PostgresSessionStore({ 
+  const sessionStore = new PostgresSessionStore({
     pool,
     createTableIfMissing: true,
     tableName: "sessions",
@@ -40,8 +41,10 @@ export function setupAuth(app: Express) {
 
   const isProduction = process.env.NODE_ENV === "production";
 
-  const sessionSettings: session.SessionOptions = {
-    secret: process.env.SESSION_SECRET || "bullwiser-secret-key-" + randomBytes(16).toString("hex"),
+  app.set("trust proxy", 1);
+
+  app.use(session({
+    secret: process.env.SESSION_SECRET || "bullwiser-secret-" + randomBytes(16).toString("hex"),
     resave: false,
     saveUninitialized: false,
     store: sessionStore,
@@ -50,41 +53,37 @@ export function setupAuth(app: Express) {
       secure: isProduction,
       sameSite: isProduction ? "none" : "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000,
-    }
-  };
+    },
+  }));
 
-  app.set("trust proxy", 1);
-  app.use(session(sessionSettings));
   app.use(passport.initialize());
   app.use(passport.session());
 
-  passport.use(
-    new LocalStrategy(async (username, password, done) => {
-      try {
-        const user = await withRetry(() => storage.getUserByUsername(username));
-        if (!user || !(await comparePasswords(password, user.password))) {
-          return done(null, false);
-        }
-        return done(null, user);
-      } catch (err) {
-        return done(err);
-      }
-    }),
-  );
+  passport.use(new LocalStrategy(async (username, password, done) => {
+    try {
+      const user = await storage.getUserByUsername(username);
+      if (!user) return done(null, false);
+      const match = await comparePasswords(password, user.password);
+      if (!match) return done(null, false);
+      return done(null, user);
+    } catch (err) {
+      return done(err);
+    }
+  }));
 
   passport.serializeUser((user, done) => done(null, user.id));
-  
+
   passport.deserializeUser(async (id: string, done) => {
     try {
-      const user = await withRetry(() => storage.getUser(id));
-      if (!user) { done(null, false); return; }
+      const user = await storage.getUser(id);
+      if (!user) return done(null, false);
       done(null, user);
-    } catch (error) {
-      console.log("User deserialization failed:", error);
+    } catch (err) {
       done(null, false);
     }
   });
 
+  // Register
   app.post("/api/register", async (req, res, next) => {
     try {
       const { username, password, confirmPassword, email, firstName, lastName } = req.body;
@@ -96,22 +95,22 @@ export function setupAuth(app: Express) {
         return res.status(400).json({ message: "Passwords do not match" });
       }
       if (password.length < 6) {
-        return res.status(400).json({ message: "Password must be at least 6 characters long" });
+        return res.status(400).json({ message: "Password must be at least 6 characters" });
       }
 
-      const existingUser = await withRetry(() => storage.getUserByUsername(username));
-      if (existingUser) {
+      const existing = await storage.getUserByUsername(username);
+      if (existing) {
         return res.status(400).json({ message: "Username already exists" });
       }
 
       const hashedPw = await hashPassword(password);
-      const newUser = await withRetry(() => storage.createUser({
+      const newUser = await storage.createUser({
         username,
         password: hashedPw,
-        email,
-        firstName,
-        lastName,
-      }));
+        email: email || null,
+        firstName: firstName || null,
+        lastName: lastName || null,
+      });
 
       req.login(newUser, (err) => {
         if (err) return next(err);
@@ -123,6 +122,7 @@ export function setupAuth(app: Express) {
     }
   });
 
+  // Login
   app.post("/api/login", (req, res, next) => {
     passport.authenticate("local", (err: any, user: any) => {
       if (err) return next(err);
@@ -135,6 +135,7 @@ export function setupAuth(app: Express) {
     })(req, res, next);
   });
 
+  // Logout
   app.post("/api/logout", (req, res, next) => {
     req.logout((err) => {
       if (err) return next(err);
@@ -142,6 +143,7 @@ export function setupAuth(app: Express) {
     });
   });
 
+  // Get current user
   app.get("/api/user", (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     const user = req.user as SelectUser;
