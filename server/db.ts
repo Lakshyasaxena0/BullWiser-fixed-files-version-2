@@ -11,12 +11,23 @@ export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
   max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 60000,
+  connectionTimeoutMillis: 30000,
+});
+
+pool.on('connect', () => {
+  console.log('[DB] Connected to Supabase successfully');
 });
 
 pool.on('error', (err) => {
-  console.error('Database pool error:', err);
+  console.error('[DB] Pool error:', err.message);
+});
+
+// Test connection on startup
+pool.query('SELECT 1').then(() => {
+  console.log('[DB] Database connection verified ✅');
+}).catch(err => {
+  console.error('[DB] Database connection failed ❌:', err.message);
 });
 
 export const db = drizzle(pool, { schema });
