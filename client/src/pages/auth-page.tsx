@@ -1,293 +1,92 @@
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Label } from "@/components/ui/label";
-import { useToast } from "@/hooks/use-toast";
-import { useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useAuth } from "@/hooks/useAuth";
-import { TrendingUp, Shield, Zap } from "lucide-react";
-import { BullWiserLogo } from "@/components/BullWiserLogo";
-import { useLocation } from "wouter";
+import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-export default function AuthPage() {
-  const { toast } = useToast();
-  const { isAuthenticated, isLoading } = useAuth();
-  const [, setLocation] = useLocation();
-  const [activeTab, setActiveTab] = useState("login");
-
-  // Redirect if already authenticated
-  if (!isLoading && isAuthenticated) {
-    setLocation("/");
-    return null;
+async function throwIfResNotOk(res: Response) {
+  if (!res.ok) {
+    const text = (await res.text()) || res.statusText;
+    throw new Error(`${res.status}: ${text}`);
   }
-
-  const loginMutation = useMutation({
-    mutationFn: async (credentials: { username: string; password: string }) => {
-      const res = await apiRequest("POST", "/api/login", credentials);
-      return await res.json();
-    },
-    onSuccess: (user) => {
-      queryClient.setQueryData(["/api/auth/user"], user);
-      toast({
-        title: "Welcome back!",
-        description: "You have successfully logged in.",
-      });
-      setLocation("/");
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Login failed",
-        description: "Invalid username or password.",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const registerMutation = useMutation({
-    mutationFn: async (userData: {
-      username: string;
-      password: string;
-      confirmPassword: string;
-      email?: string;
-      firstName?: string;
-      lastName?: string;
-    }) => {
-      const res = await apiRequest("POST", "/api/register", userData);
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.message || "Registration failed");
-      }
-      return await res.json();
-    },
-    onSuccess: (user) => {
-      queryClient.setQueryData(["/api/auth/user"], user);
-      toast({
-        title: "Account created!",
-        description: "Your account has been successfully created.",
-      });
-      setLocation("/");
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Registration failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    loginMutation.mutate({
-      username: formData.get("username") as string,
-      password: formData.get("password") as string,
-    });
-  };
-
-  const handleRegister = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    registerMutation.mutate({
-      username: formData.get("username") as string,
-      password: formData.get("password") as string,
-      confirmPassword: formData.get("confirmPassword") as string,
-      email: formData.get("email") as string,
-      firstName: formData.get("firstName") as string,
-      lastName: formData.get("lastName") as string,
-    });
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-4">
-      <div className="w-full max-w-5xl grid lg:grid-cols-2 gap-8">
-        {/* Left side - Auth Forms */}
-        <Card className="bg-white/95 backdrop-blur">
-          <CardHeader className="space-y-1">
-            <div className="flex items-center space-x-2 mb-4">
-              <BullWiserLogo className="w-10 h-10" />
-              <CardTitle className="text-2xl font-bold">BullWiser</CardTitle>
-            </div>
-            <CardDescription>
-              Enter your credentials to access your account
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="login">Login</TabsTrigger>
-                <TabsTrigger value="register">Register</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="login">
-                <form onSubmit={handleLogin} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="login-username">Username</Label>
-                    <Input
-                      id="login-username"
-                      name="username"
-                      type="text"
-                      placeholder="Enter your username"
-                      required
-                      data-testid="input-login-username"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="login-password">Password</Label>
-                    <Input
-                      id="login-password"
-                      name="password"
-                      type="password"
-                      placeholder="Enter your password"
-                      required
-                      data-testid="input-login-password"
-                    />
-                  </div>
-                  <Button
-                    type="submit"
-                    className="w-full"
-                    disabled={loginMutation.isPending}
-                    data-testid="button-login"
-                  >
-                    {loginMutation.isPending ? "Logging in..." : "Login"}
-                  </Button>
-                </form>
-              </TabsContent>
-
-              <TabsContent value="register">
-                <form onSubmit={handleRegister} className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="firstName">First Name</Label>
-                      <Input
-                        id="firstName"
-                        name="firstName"
-                        type="text"
-                        placeholder="John"
-                        data-testid="input-first-name"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="lastName">Last Name</Label>
-                      <Input
-                        id="lastName"
-                        name="lastName"
-                        type="text"
-                        placeholder="Doe"
-                        data-testid="input-last-name"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="register-username">Username *</Label>
-                    <Input
-                      id="register-username"
-                      name="username"
-                      type="text"
-                      placeholder="Choose a username"
-                      required
-                      data-testid="input-register-username"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="email">Email</Label>
-                    <Input
-                      id="email"
-                      name="email"
-                      type="email"
-                      placeholder="john@example.com"
-                      data-testid="input-email"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="register-password">Password *</Label>
-                    <Input
-                      id="register-password"
-                      name="password"
-                      type="password"
-                      placeholder="Minimum 6 characters"
-                      required
-                      minLength={6}
-                      data-testid="input-register-password"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="confirmPassword">Confirm Password *</Label>
-                    <Input
-                      id="confirmPassword"
-                      name="confirmPassword"
-                      type="password"
-                      placeholder="Re-enter your password"
-                      required
-                      minLength={6}
-                      data-testid="input-confirm-password"
-                    />
-                  </div>
-                  <Button
-                    type="submit"
-                    className="w-full"
-                    disabled={registerMutation.isPending}
-                    data-testid="button-register"
-                  >
-                    {registerMutation.isPending ? "Creating account..." : "Create Account"}
-                  </Button>
-                </form>
-              </TabsContent>
-            </Tabs>
-          </CardContent>
-        </Card>
-
-        {/* Right side - Features */}
-        <div className="hidden lg:flex flex-col justify-center space-y-6">
-          <div className="text-white space-y-4">
-            <h1 className="text-4xl font-bold">Welcome to BullWiser</h1>
-            <p className="text-lg text-blue-100">
-              Advanced AI-powered stock prediction platform with real-time NSE/BSE market analysis
-            </p>
-          </div>
-
-          <div className="space-y-4">
-            <div className="flex items-start space-x-4">
-              <div className="w-10 h-10 bg-green-500 rounded-lg flex items-center justify-center flex-shrink-0">
-                <TrendingUp className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <h3 className="text-white font-semibold">AI-Powered Predictions</h3>
-                <p className="text-blue-100 text-sm">
-                  Advanced algorithms analyze market patterns with real-time NSE/BSE data
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-start space-x-4">
-              <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center flex-shrink-0">
-                <Shield className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <h3 className="text-white font-semibold">Secure & Reliable</h3>
-                <p className="text-blue-100 text-sm">
-                  Your data is protected with industry-standard encryption
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-start space-x-4">
-              <div className="w-10 h-10 bg-purple-500 rounded-lg flex items-center justify-center flex-shrink-0">
-                <Zap className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <h3 className="text-white font-semibold">Real-time Insights</h3>
-                <p className="text-blue-100 text-sm">
-                  Live market data and instant alerts for trading opportunities
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
+
+// Retries on 502/504 (Neon waking up) up to 4 times with 5s delay
+export async function apiRequest(
+  method: string,
+  url: string,
+  data?: unknown,
+): Promise<Response> {
+  const maxRetries = 4;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: data ? { "Content-Type": "application/json" } : {},
+        body: data ? JSON.stringify(data) : undefined,
+        credentials: "include",
+      });
+
+      // Retry on gateway errors (Neon/Render waking up)
+      if ((res.status === 502 || res.status === 504) && attempt < maxRetries) {
+        console.log(`[API] Got ${res.status}, retrying (${attempt}/${maxRetries}) in 5s...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        continue;
+      }
+
+      await throwIfResNotOk(res);
+      return res;
+    } catch (err: any) {
+      lastError = err;
+      // Only retry on network/timeout errors
+      if (attempt < maxRetries && (
+        err.message?.includes("504") ||
+        err.message?.includes("502") ||
+        err.message?.includes("Failed to fetch")
+      )) {
+        console.log(`[API] Request failed, retrying (${attempt}/${maxRetries}) in 5s...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
+type UnauthorizedBehavior = "returnNull" | "throw";
+
+export const getQueryFn: <T>(options: {
+  on401: UnauthorizedBehavior;
+}) => QueryFunction<T> =
+  ({ on401: unauthorizedBehavior }) =>
+  async ({ queryKey }) => {
+    const url = queryKey[0] as string;
+
+    let res: Response;
+    try {
+      res = await fetch(url, { credentials: "include" });
+    } catch (networkError) {
+      if (unauthorizedBehavior === "returnNull") return null as T;
+      throw new Error(`Network error reaching ${url}.`);
+    }
+
+    if (unauthorizedBehavior === "returnNull" && res.status === 401) return null as T;
+    if (!res.ok && unauthorizedBehavior === "returnNull") return null as T;
+
+    await throwIfResNotOk(res);
+    return await res.json() as T;
+  };
+
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      queryFn: getQueryFn({ on401: "throw" }),
+      refetchInterval: false,
+      refetchOnWindowFocus: false,
+      staleTime: Infinity,
+      retry: false,
+    },
+    mutations: {
+      retry: false,
+    },
+  },
+});
