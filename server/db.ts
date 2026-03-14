@@ -10,20 +10,20 @@ if (!process.env.DATABASE_URL) {
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
+  family: 4, // Force IPv4 — prevents ENETUNREACH on IPv6
   max: 10,
   idleTimeoutMillis: 60000,
   connectionTimeoutMillis: 30000,
 });
 
 pool.on('connect', () => {
-  console.log('[DB] Connected to Supabase successfully');
+  console.log('[DB] Connected to Supabase ✅');
 });
 
 pool.on('error', (err) => {
   console.error('[DB] Pool error:', err.message);
 });
 
-// Test connection on startup
 pool.query('SELECT 1').then(() => {
   console.log('[DB] Database connection verified ✅');
 }).catch(err => {
