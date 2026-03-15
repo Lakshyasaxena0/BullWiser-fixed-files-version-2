@@ -94,7 +94,6 @@ function calculateCryptoAstrologyBias(symbol: string): { bias: number; hora: str
     'Sun', 'Venus', 'Mercury', 'Moon', 'Saturn', 'Jupiter', 'Mars',
     'Sun', 'Venus', 'Mercury'
   ];
-
   const currentHora = horaRulers[hour];
   const cryptoInfluence: Record<string, { base: number; volatility: number }> = {
     'BTC':   { base: 2, volatility: 1.2 },
@@ -108,13 +107,10 @@ function calculateCryptoAstrologyBias(symbol: string): { bias: number; hora: str
     'AVAX':  { base: 1, volatility: 1.2 },
     'ATOM':  { base: 0, volatility: 1.0 },
   };
-
   const cryptoData = cryptoInfluence[symbol] || { base: 0, volatility: 1.0 };
   const symbolHash = symbol.split('').reduce((a, b) => a + b.charCodeAt(0), 0);
   const horaIndex = horaRulers.indexOf(currentHora);
-
   let bias = ((symbolHash * horaIndex) % 11) - 5 + cryptoData.base;
-
   switch (currentHora) {
     case 'Jupiter': bias += Math.random() > 0.5 ? 2 : 1; break;
     case 'Venus':   bias += Math.random() > 0.6 ? 1 : 0; break;
@@ -124,23 +120,19 @@ function calculateCryptoAstrologyBias(symbol: string): { bias: number; hora: str
     case 'Moon':    bias += (Math.random() - 0.5) * 3; break;
     case 'Sun':     bias += Math.random() > 0.6 ? 1 : 0; break;
   }
-
   bias *= cryptoData.volatility;
   bias = Math.max(-5, Math.min(5, Math.round(bias)));
-
   return { bias, hora: currentHora };
 }
 
 function applyCryptoAstrologyBias(quote: CryptoQuote): CryptoQuote {
   const { bias, hora } = calculateCryptoAstrologyBias(quote.symbol);
   const biasMultiplier = 1 + (bias * 0.005);
-  const adjustedPrice = quote.lastPrice * biasMultiplier;
-
   return {
     ...quote,
     astrologyBias: bias,
     horaInfluence: hora,
-    adjustedPrice: Math.round(adjustedPrice * 100) / 100,
+    adjustedPrice: Math.round(quote.lastPrice * biasMultiplier * 100) / 100,
   };
 }
 
@@ -164,10 +156,8 @@ export class CryptoDataService {
   async getCryptoQuote(symbol: string): Promise<CryptoQuote | null> {
     const cacheKey = `crypto_quote_${symbol}`;
     if (this.isCacheValid(cacheKey)) return this.getCachedData(cacheKey);
-
     const finnhubSymbol = FINNHUB_SYMBOL_MAP[symbol.toUpperCase()];
     if (!finnhubSymbol) return null;
-
     try {
       const [quoteRes, candleRes] = await Promise.all([
         axios.get(`${FINNHUB_BASE_URL}/quote`, {
@@ -185,29 +175,21 @@ export class CryptoDataService {
           timeout: 10000,
         }),
       ]);
-
       const q = quoteRes.data;
       const c = candleRes.data;
-
       if (!q || q.c === 0) return null;
-
-      const high24h = c?.h?.[0] ?? q.h ?? q.c;
-      const low24h  = c?.l?.[0] ?? q.l ?? q.c;
-      const vol24h  = c?.v?.[0] ?? 0;
-
       const quote: CryptoQuote = {
         symbol: symbol.toUpperCase(),
         name: CRYPTO_NAMES[symbol.toUpperCase()] || symbol.toUpperCase(),
         lastPrice: q.c,
         change24h: q.d ?? 0,
         changePercent24h: q.dp ?? 0,
-        volume24h: vol24h,
+        volume24h: c?.v?.[0] ?? 0,
         marketCap: 0,
-        high24h,
-        low24h,
+        high24h: c?.h?.[0] ?? q.h ?? q.c,
+        low24h:  c?.l?.[0] ?? q.l ?? q.c,
         timestamp: new Date(),
       };
-
       const biasedQuote = applyCryptoAstrologyBias(quote);
       this.setCacheData(cacheKey, biasedQuote);
       return biasedQuote;
@@ -220,22 +202,12 @@ export class CryptoDataService {
   async getCryptoOverview(): Promise<CryptoOverview> {
     const cacheKey = 'crypto_overview';
     if (this.isCacheValid(cacheKey)) return this.getCachedData(cacheKey);
-
     try {
       const topSymbols = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'MATIC', 'AVAX', 'LINK'];
-      const quotes = (
-        await Promise.all(topSymbols.map(s => this.getCryptoQuote(s)))
-      ).filter(Boolean) as CryptoQuote[];
-
-      const sortedByChange = [...quotes].sort(
-        (a, b) => (b.changePercent24h || 0) - (a.changePercent24h || 0)
-      );
-      const sortedByVolume = [...quotes].sort(
-        (a, b) => (b.volume24h || 0) - (a.volume24h || 0)
-      );
-
+      const quotes = (await Promise.all(topSymbols.map(s => this.getCryptoQuote(s)))).filter(Boolean) as CryptoQuote[];
+      const sortedByChange = [...quotes].sort((a, b) => (b.changePercent24h || 0) - (a.changePercent24h || 0));
+      const sortedByVolume = [...quotes].sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0));
       const totalVolume = quotes.reduce((sum, q) => sum + (q.volume24h || 0), 0);
-
       const overview: CryptoOverview = {
         totalMarketCap: 0,
         totalVolume,
@@ -244,50 +216,30 @@ export class CryptoDataService {
         topLosers: sortedByChange.slice(-5).reverse(),
         mostActive: sortedByVolume.slice(0, 5),
       };
-
       this.setCacheData(cacheKey, overview);
       return overview;
     } catch (error) {
       console.error('Error fetching crypto overview:', error);
-      return {
-        totalMarketCap: 0,
-        totalVolume: 0,
-        marketCapChange24h: 0,
-        topGainers: [],
-        topLosers: [],
-        mostActive: [],
-      };
+      return { totalMarketCap: 0, totalVolume: 0, marketCapChange24h: 0, topGainers: [], topLosers: [], mostActive: [] };
     }
   }
 
   async getCryptoHistoricalData(symbol: string, days: number = 30): Promise<any[]> {
     const cacheKey = `crypto_historical_${symbol}_${days}`;
     if (this.isCacheValid(cacheKey)) return this.getCachedData(cacheKey);
-
     const finnhubSymbol = FINNHUB_SYMBOL_MAP[symbol.toUpperCase()];
     if (!finnhubSymbol) return [];
-
     try {
       const to   = Math.floor(Date.now() / 1000);
       const from = to - days * 86400;
-
       const response = await axios.get(`${FINNHUB_BASE_URL}/crypto/candle`, {
-        params: {
-          symbol: finnhubSymbol,
-          resolution: 'D',
-          from,
-          to,
-          token: FINNHUB_API_KEY,
-        },
+        params: { symbol: finnhubSymbol, resolution: 'D', from, to, token: FINNHUB_API_KEY },
         timeout: 15000,
       });
-
       const data = response.data;
       if (!data || data.s === 'no_data' || !data.t) return [];
-
       const { bias } = calculateCryptoAstrologyBias(symbol);
       const biasMultiplier = 1 + (bias * 0.002);
-
       const historicalData = data.t.map((timestamp: number, i: number) => ({
         date:      new Date(timestamp * 1000),
         open:      (data.o?.[i] ?? 0) * biasMultiplier,
@@ -297,7 +249,6 @@ export class CryptoDataService {
         volume:    data.v?.[i] ?? 0,
         marketCap: 0,
       }));
-
       this.setCacheData(cacheKey, historicalData);
       return historicalData;
     } catch (error) {
@@ -308,18 +259,11 @@ export class CryptoDataService {
 
   async searchCryptos(query: string): Promise<CryptoQuote[]> {
     try {
-      const allCryptos = Object.entries(CRYPTO_NAMES).map(([symbol, name]) => ({
-        symbol,
-        name,
-      }));
-
+      const allCryptos = Object.entries(CRYPTO_NAMES).map(([symbol, name]) => ({ symbol, name }));
       const queryLower = query.toLowerCase().trim();
-
       const matched = allCryptos
-        .filter(
-          ({ symbol, name }) =>
-            symbol.toLowerCase().includes(queryLower) ||
-            name.toLowerCase().includes(queryLower)
+        .filter(({ symbol, name }) =>
+          symbol.toLowerCase().includes(queryLower) || name.toLowerCase().includes(queryLower)
         )
         .sort((a, b) => {
           if (a.symbol.toLowerCase() === queryLower) return -1;
@@ -329,13 +273,11 @@ export class CryptoDataService {
           return a.symbol.localeCompare(b.symbol);
         })
         .slice(0, 12);
-
       const quotes: CryptoQuote[] = [];
       for (const crypto of matched) {
         const quote = await this.getCryptoQuote(crypto.symbol);
         if (quote) quotes.push(quote);
       }
-
       return quotes;
     } catch (error) {
       console.error('Error searching cryptos:', error);
