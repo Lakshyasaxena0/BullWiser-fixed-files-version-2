@@ -1,7 +1,4 @@
-import axios from 'axios';
-
-const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || '';
-const FINNHUB_BASE_URL = 'https://finnhub.io/api/v1';
+import yahooFinance from 'yahoo-finance2';
 
 export interface StockQuote {
   symbol: string;
@@ -161,31 +158,28 @@ export class StockDataService {
     const cacheKey = `nse_quote_${symbol}`;
     if (this.isCacheValid(cacheKey)) return this.getCachedData(cacheKey);
     try {
-      const response = await axios.get(`${FINNHUB_BASE_URL}/quote`, {
-        params: { symbol: `NSE:${symbol}`, token: FINNHUB_API_KEY },
-        timeout: 10000,
-      });
-      const data = response.data;
-      if (!data || data.c === 0) return null;
+      const data = await yahooFinance.quote(`${symbol}.NS`, {}, { validateResult: false });
+      if (!data || !data.regularMarketPrice) return null;
       const quote: StockQuote = {
         symbol,
-        companyName: NSE_COMPANY_NAMES[symbol] || symbol,
+        companyName: data.shortName || NSE_COMPANY_NAMES[symbol] || symbol,
         exchange: 'NSE',
-        lastPrice: data.c,
-        change: data.d ?? 0,
-        changePercent: data.dp ?? 0,
-        volume: 0,
-        openPrice: data.o ?? data.c,
-        highPrice: data.h ?? data.c,
-        lowPrice: data.l ?? data.c,
-        previousClose: data.pc ?? data.c,
+        lastPrice: data.regularMarketPrice,
+        change: data.regularMarketChange ?? 0,
+        changePercent: data.regularMarketChangePercent ?? 0,
+        volume: data.regularMarketVolume ?? 0,
+        openPrice: data.regularMarketOpen ?? data.regularMarketPrice,
+        highPrice: data.regularMarketDayHigh ?? data.regularMarketPrice,
+        lowPrice: data.regularMarketDayLow ?? data.regularMarketPrice,
+        marketCap: data.marketCap ?? 0,
+        previousClose: data.regularMarketPreviousClose ?? data.regularMarketPrice,
         timestamp: new Date(),
       };
       const biasedQuote = applyAstrologyBias(quote);
       this.setCacheData(cacheKey, biasedQuote);
       return biasedQuote;
     } catch (error) {
-      console.error(`Error fetching Finnhub NSE quote for ${symbol}:`, error);
+      console.error(`Error fetching Yahoo Finance NSE quote for ${symbol}:`, error);
       return null;
     }
   }
@@ -194,35 +188,32 @@ export class StockDataService {
     const cacheKey = `bse_quote_${symbol}`;
     if (this.isCacheValid(cacheKey)) return this.getCachedData(cacheKey);
     try {
-      const response = await axios.get(`${FINNHUB_BASE_URL}/quote`, {
-        params: { symbol: `BSE:${symbol}`, token: FINNHUB_API_KEY },
-        timeout: 10000,
-      });
-      const data = response.data;
-      if (!data || data.c === 0) {
+      const data = await yahooFinance.quote(`${symbol}.BO`, {}, { validateResult: false });
+      if (!data || !data.regularMarketPrice) {
         const nseQuote = await this.getNSEQuote(symbol);
         if (!nseQuote) return null;
         return { ...nseQuote, exchange: 'BSE' };
       }
       const quote: StockQuote = {
         symbol,
-        companyName: NSE_COMPANY_NAMES[symbol] || symbol,
+        companyName: data.shortName || NSE_COMPANY_NAMES[symbol] || symbol,
         exchange: 'BSE',
-        lastPrice: data.c,
-        change: data.d ?? 0,
-        changePercent: data.dp ?? 0,
-        volume: 0,
-        openPrice: data.o ?? data.c,
-        highPrice: data.h ?? data.c,
-        lowPrice: data.l ?? data.c,
-        previousClose: data.pc ?? data.c,
+        lastPrice: data.regularMarketPrice,
+        change: data.regularMarketChange ?? 0,
+        changePercent: data.regularMarketChangePercent ?? 0,
+        volume: data.regularMarketVolume ?? 0,
+        openPrice: data.regularMarketOpen ?? data.regularMarketPrice,
+        highPrice: data.regularMarketDayHigh ?? data.regularMarketPrice,
+        lowPrice: data.regularMarketDayLow ?? data.regularMarketPrice,
+        marketCap: data.marketCap ?? 0,
+        previousClose: data.regularMarketPreviousClose ?? data.regularMarketPrice,
         timestamp: new Date(),
       };
       const biasedQuote = applyAstrologyBias(quote);
       this.setCacheData(cacheKey, biasedQuote);
       return biasedQuote;
     } catch (error) {
-      console.error(`Error fetching Finnhub BSE quote for ${symbol}:`, error);
+      console.error(`Error fetching Yahoo Finance BSE quote for ${symbol}:`, error);
       return null;
     }
   }
@@ -233,30 +224,27 @@ export class StockDataService {
     const nseQuote = await this.getNSEQuote(symbol);
     return nseQuote || this.getBSEQuote(symbol);
   }
-    async getMarketIndices(): Promise<IndexData[]> {
+
+  async getMarketIndices(): Promise<IndexData[]> {
     const cacheKey = 'market_indices';
     if (this.isCacheValid(cacheKey)) return this.getCachedData(cacheKey);
     try {
       const indexSymbols = [
-        { finnhub: 'NSE:NIFTY50',   name: 'NIFTY 50'  },
-        { finnhub: 'BSE:SENSEX',    name: 'SENSEX'     },
-        { finnhub: 'NSE:BANKNIFTY', name: 'BANK NIFTY' },
-        { finnhub: 'NSE:NIFTYIT',   name: 'NIFTY IT'   },
+        { yahoo: '^NSEI',    name: 'NIFTY 50'   },
+        { yahoo: '^BSESN',   name: 'SENSEX'     },
+        { yahoo: '^NSEBANK', name: 'BANK NIFTY' },
+        { yahoo: '^CNXIT',   name: 'NIFTY IT'   },
       ];
       const results = await Promise.all(
-        indexSymbols.map(async ({ finnhub, name }) => {
+        indexSymbols.map(async ({ yahoo, name }) => {
           try {
-            const res = await axios.get(`${FINNHUB_BASE_URL}/quote`, {
-              params: { symbol: finnhub, token: FINNHUB_API_KEY },
-              timeout: 10000,
-            });
-            const d = res.data;
-            if (!d || d.c === 0) return null;
+            const data = await yahooFinance.quote(yahoo, {}, { validateResult: false });
+            if (!data || !data.regularMarketPrice) return null;
             return {
               name,
-              value: d.c,
-              change: d.d ?? 0,
-              changePercent: d.dp ?? 0,
+              value: data.regularMarketPrice,
+              change: data.regularMarketChange ?? 0,
+              changePercent: data.regularMarketChangePercent ?? 0,
               timestamp: new Date(),
             } as IndexData;
           } catch {
@@ -299,7 +287,7 @@ export class StockDataService {
       const validQuotes = stockQuotes.filter(Boolean) as StockQuote[];
       const sortedByChange = [...validQuotes].sort((a, b) => (b.changePercent || 0) - (a.changePercent || 0));
       const sortedByVolume = [...validQuotes].sort((a, b) => (b.volume || 0) - (a.volume || 0));
-      const findIndex = (name: string) =>
+      const findIndex = (name: string): IndexData =>
         indices.find(i => i.name === name) ?? { name, value: 0, change: 0, changePercent: 0, timestamp: new Date() };
       const overview: MarketOverview = {
         indices: {
@@ -324,44 +312,42 @@ export class StockDataService {
     const cacheKey = `historical_${symbol}_${days}`;
     if (this.isCacheValid(cacheKey)) return this.getCachedData(cacheKey);
     try {
-      const to   = Math.floor(Date.now() / 1000);
-      const from = to - days * 86400;
-      const response = await axios.get(`${FINNHUB_BASE_URL}/stock/candle`, {
-        params: {
-          symbol: `NSE:${symbol}`,
-          resolution: 'D',
-          from,
-          to,
-          token: FINNHUB_API_KEY,
-        },
-        timeout: 15000,
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+      const data = await yahooFinance.historical(`${symbol}.NS`, {
+        period1: startDate,
+        period2: endDate,
+        interval: '1d',
       });
-      const data = response.data;
-      if (!data || data.s === 'no_data' || !data.t) return [];
+      if (!data || data.length === 0) return [];
       const { bias } = calculateAstrologyBias(symbol);
       const biasMultiplier = 1 + (bias * 0.001);
-      const historicalData = data.t.map((timestamp: number, i: number) => ({
-        date:   new Date(timestamp * 1000),
-        open:   (data.o?.[i] ?? 0) * biasMultiplier,
-        high:   (data.h?.[i] ?? 0) * biasMultiplier,
-        low:    (data.l?.[i] ?? 0) * biasMultiplier,
-        close:  (data.c?.[i] ?? 0) * biasMultiplier,
-        volume: data.v?.[i] ?? 0,
+      const historicalData = data.map((entry: any) => ({
+        date:                entry.date,
+        open:                (entry.open ?? 0) * biasMultiplier,
+        high:                (entry.high ?? 0) * biasMultiplier,
+        low:                 (entry.low ?? 0) * biasMultiplier,
+        close:               (entry.close ?? 0) * biasMultiplier,
+        volume:              entry.volume ?? 0,
+        CH_CLOSING_PRICE:    (entry.close ?? 0) * biasMultiplier,
+        CH_OPENING_PRICE:    (entry.open ?? 0) * biasMultiplier,
+        CH_TRADE_HIGH_PRICE: (entry.high ?? 0) * biasMultiplier,
+        CH_TRADE_LOW_PRICE:  (entry.low ?? 0) * biasMultiplier,
+        CH_TOT_TRADED_QTY:   entry.volume ?? 0,
+        CH_TIMESTAMP:        entry.date,
       }));
       this.setCacheData(cacheKey, historicalData);
       return historicalData;
     } catch (error) {
-      console.error(`Error fetching Finnhub historical data for ${symbol}:`, error);
+      console.error(`Error fetching Yahoo Finance historical data for ${symbol}:`, error);
       return [];
     }
   }
 
   async searchStocks(query: string): Promise<StockQuote[]> {
     try {
-      const allStocks = Object.entries(NSE_COMPANY_NAMES).map(([symbol, companyName]) => ({
-        symbol,
-        companyName,
-      }));
+      const allStocks = Object.entries(NSE_COMPANY_NAMES).map(([symbol, companyName]) => ({ symbol, companyName }));
       const queryLower = query.toLowerCase().trim();
       const matched = allStocks
         .filter(({ symbol, companyName }) =>
