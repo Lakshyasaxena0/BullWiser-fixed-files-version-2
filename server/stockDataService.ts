@@ -1,4 +1,5 @@
-import yahooFinance from 'yahoo-finance2';
+import YahooFinanceLib from 'yahoo-finance2';
+const yahooFinance = new (YahooFinanceLib as any)({ suppressNotices: ['yahooSurvey'] });
 
 export interface StockQuote {
   symbol: string;
