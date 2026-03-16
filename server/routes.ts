@@ -1148,7 +1148,58 @@ export function registerRoutes(app: Express): Server {
       res.status(500).json({ message: "Error fetching prediction statistics" });
     }
   });
+  // Real user dashboard stats computed from actual DB data
+  app.get('/api/user/dashboard-stats', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
 
+      const [allPredictions, allFeedback] = await Promise.all([
+        storage.getUserPredictions(userId),
+        storage.getUserFeedback(userId),
+      ]);
+
+      const activePredictions = allPredictions.filter(p => p.isActive);
+
+      // Portfolio value: sum of currentPrice for all active predictions
+      const portfolioValue = activePredictions.reduce(
+        (sum, p) => sum + (p.currentPrice || 0), 0
+      );
+
+      // Accuracy rate: from feedback (useful/total) if available, else avg confidence
+      let accuracyRate = 0;
+      if (allFeedback.length > 0) {
+        const usefulCount = allFeedback.filter(f => f.useful === 1).length;
+        accuracyRate = Math.round((usefulCount / allFeedback.length) * 100 * 10) / 10;
+      } else if (allPredictions.length > 0) {
+        const avgConf = allPredictions.reduce((sum, p) => sum + (p.confidence || 0), 0) / allPredictions.length;
+        accuracyRate = Math.round(avgConf * 10) / 10;
+      }
+
+      // Portfolio performance: avg predicted upside across active predictions
+      let portfolioPerformance = 0;
+      if (activePredictions.length > 0) {
+        const totalChange = activePredictions.reduce((sum, p) => {
+          if (p.currentPrice && p.predHigh) {
+            return sum + (((p.predHigh - p.currentPrice) / p.currentPrice) * 100);
+          }
+          return sum;
+        }, 0);
+        portfolioPerformance = Math.round((totalChange / activePredictions.length) * 100) / 100;
+      }
+
+      res.json({
+        portfolioValue: Math.round(portfolioValue * 100) / 100,
+        portfolioPerformance,
+        accuracyRate,
+        totalPredictions: allPredictions.length,
+        activePredictionsCount: activePredictions.length,
+        totalFeedback: allFeedback.length,
+      });
+    } catch (error) {
+      console.error('Error fetching dashboard stats:', error);
+      res.status(500).json({ message: "Error fetching dashboard statistics" });
+    }
+  });
   // AI status endpoint
   app.get('/api/ai/status', async (req, res) => {
     try {
