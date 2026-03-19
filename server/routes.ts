@@ -208,7 +208,7 @@ async function runTrainingSimulation() {
 export function registerRoutes(app: Express): Server {
   // Auth middleware
   setupAuth(app);
-  async deleteUser(userId: string): Promise<void> {
+ async deleteUser(...)
   await db.delete(users).where(eq(users.id, userId));
 }
 // Warmup endpoint — wakes Neon before user registers
