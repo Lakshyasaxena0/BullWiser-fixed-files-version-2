@@ -11,6 +11,9 @@ import { astrologyService } from "./astrologyService";
 import { advancedAstrologyService } from "./advancedAstrologyService";
 import { aiAstrologyTrainer } from "./aiAstrologyTrainer";
 import * as crypto from 'crypto';
+import { db } from "./db";
+import { users } from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 function mockTechnicalScore(stock: string): number {
   const seed = Math.abs(stock.split('').reduce((a, b) => a + b.charCodeAt(0), 0)) % 1000;
