@@ -1,365 +1,152 @@
-
-import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ChevronLeft, Download, Filter, TrendingUp, TrendingDown, Bitcoin } from "lucide-react";
+import { ChevronLeft, TrendingUp, TrendingDown, Bitcoin, BarChart2 } from "lucide-react";
 import { useLocation } from "wouter";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function TradingHistoryPage() {
   const [, setLocation] = useLocation();
-  const [filter, setFilter] = useState('all');
+  const { isAuthenticated } = useAuth();
 
-  const trades = [
-    // Stock trades
-    {
-      id: 1,
-      symbol: 'RELIANCE',
-      name: 'Reliance Industries',
-      type: 'BUY',
-      quantity: 50,
-      price: 2456.80,
-      currentPrice: 2587.20,
-      date: '2024-01-15',
-      status: 'ACTIVE',
-      pnl: +6521.00,
-      pnlPercent: +5.31,
-      category: 'stock',
-      currency: '₹'
-    },
-    {
-      id: 2,
-      symbol: 'TCS',
-      name: 'Tata Consultancy Services',
-      type: 'SELL',
-      quantity: 25,
-      price: 3892.50,
-      currentPrice: 3845.30,
-      date: '2024-01-14',
-      status: 'CLOSED',
-      pnl: +1181.25,
-      pnlPercent: +1.21,
-      category: 'stock',
-      currency: '₹'
-    },
-    {
-      id: 3,
-      symbol: 'HDFCBANK',
-      name: 'HDFC Bank',
-      type: 'BUY',
-      quantity: 30,
-      price: 1675.25,
-      currentPrice: 1642.80,
-      date: '2024-01-12',
-      status: 'ACTIVE',
-      pnl: -973.50,
-      pnlPercent: -1.94,
-      category: 'stock',
-      currency: '₹'
-    },
-    {
-      id: 4,
-      symbol: 'INFY',
-      name: 'Infosys',
-      type: 'BUY',
-      quantity: 40,
-      price: 1789.60,
-      currentPrice: 1823.45,
-      date: '2024-01-10',
-      status: 'ACTIVE',
-      pnl: +1354.00,
-      pnlPercent: +1.89,
-      category: 'stock',
-      currency: '₹'
-    },
-    {
-      id: 5,
-      symbol: 'SUZLON',
-      name: 'Suzlon Energy',
-      type: 'BUY',
-      quantity: 200,
-      price: 48.75,
-      currentPrice: 54.20,
-      date: '2024-01-08',
-      status: 'CLOSED',
-      pnl: +1090.00,
-      pnlPercent: +11.18,
-      category: 'stock',
-      currency: '₹'
-    },
-    // Crypto trades
-    {
-      id: 6,
-      symbol: 'BTC',
-      name: 'Bitcoin',
-      type: 'BUY',
-      quantity: 0.5,
-      price: 45250.80,
-      currentPrice: 47890.25,
-      date: '2024-01-15',
-      status: 'ACTIVE',
-      pnl: +1319.73,
-      pnlPercent: +5.83,
-      category: 'crypto',
-      currency: '$'
-    },
-    {
-      id: 7,
-      symbol: 'ETH',
-      name: 'Ethereum',
-      type: 'SELL',
-      quantity: 2.5,
-      price: 2890.50,
-      currentPrice: 2756.30,
-      date: '2024-01-14',
-      status: 'CLOSED',
-      pnl: +335.50,
-      pnlPercent: +4.64,
-      category: 'crypto',
-      currency: '$'
-    },
-    {
-      id: 8,
-      symbol: 'ADA',
-      name: 'Cardano',
-      type: 'BUY',
-      quantity: 1000,
-      price: 0.485,
-      currentPrice: 0.452,
-      date: '2024-01-12',
-      status: 'ACTIVE',
-      pnl: -33.00,
-      pnlPercent: -6.80,
-      category: 'crypto',
-      currency: '$'
-    },
-    {
-      id: 9,
-      symbol: 'SOL',
-      name: 'Solana',
-      type: 'BUY',
-      quantity: 10,
-      price: 89.60,
-      currentPrice: 98.45,
-      date: '2024-01-10',
-      status: 'ACTIVE',
-      pnl: +88.50,
-      pnlPercent: +9.87,
-      category: 'crypto',
-      currency: '$'
+  const { data: predictions, isLoading } = useQuery<any[]>({
+    queryKey: ["/api/user/predictions"],
+    enabled: isAuthenticated,
+  });
+
+  const allTrades = predictions || [];
+  const stockTrades = allTrades.filter(p => !p.stock?.startsWith('CRYPTO_'));
+  const cryptoTrades = allTrades.filter(p => p.stock?.startsWith('CRYPTO_'));
+
+  // Stats from real data
+  const totalTrades = allTrades.length;
+  const activeTrades = allTrades.filter(p => p.isActive).length;
+  const avgConfidence = totalTrades > 0
+    ? (allTrades.reduce((sum, p) => sum + (p.confidence || 0), 0) / totalTrades).toFixed(1)
+    : 0;
+  const winRate = totalTrades > 0
+    ? ((allTrades.filter(p => (p.predHigh - p.currentPrice) > 0).length / totalTrades) * 100).toFixed(1)
+    : 0;
+
+  const getStatusBadge = (isActive: boolean) =>
+    isActive
+      ? <Badge className="bg-blue-100 text-blue-800">Active</Badge>
+      : <Badge className="bg-gray-100 text-gray-800">Past</Badge>;
+
+  const getConfidenceColor = (c: number) =>
+    c >= 70 ? "text-green-600" : c >= 50 ? "text-amber-600" : "text-red-600";
+
+  const renderTable = (trades: any[], isCrypto = false) => {
+    if (trades.length === 0) {
+      return (
+        <div className="flex flex-col items-center justify-center py-16 text-gray-400 space-y-3">
+          <BarChart2 className="h-12 w-12 text-gray-300" />
+          <p className="text-sm font-medium">No {isCrypto ? "crypto" : "stock"} predictions yet</p>
+          <Button size="sm" variant="outline" onClick={() => setLocation(isCrypto ? '/cryptocurrencies' : '/')}>
+            {isCrypto ? "Go to Crypto" : "Go to Dashboard"}
+          </Button>
+        </div>
+      );
     }
-  ];
-
-  const filteredTrades = filter === 'all' ? trades : 
-    filter === 'stock' || filter === 'crypto' ? trades.filter(trade => trade.category === filter) :
-    trades.filter(trade => trade.status.toLowerCase() === filter);
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'ACTIVE':
-        return <Badge variant="secondary" className="bg-blue-100 text-blue-800">Active</Badge>;
-      case 'CLOSED':
-        return <Badge variant="secondary" className="bg-gray-100 text-gray-800">Closed</Badge>;
-      default:
-        return <Badge variant="outline">Unknown</Badge>;
-    }
-  };
-
-  const getPnLDisplay = (pnl: number, pnlPercent: number, currency: string) => {
-    const isPositive = pnl > 0;
-    const color = isPositive ? 'text-green-600' : 'text-red-600';
-    const icon = isPositive ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />;
-    
     return (
-      <div className={`flex items-center space-x-1 ${color}`}>
-        {icon}
-        <span className="font-semibold">
-          {currency}{Math.abs(pnl).toLocaleString(currency === '$' ? 'en-US' : 'en-IN')}
-        </span>
-        <span className="text-sm">
-          ({isPositive ? '+' : '-'}{Math.abs(pnlPercent).toFixed(2)}%)
-        </span>
-      </div>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Symbol</TableHead>
+            <TableHead>Entry Price</TableHead>
+            <TableHead>Target Low</TableHead>
+            <TableHead>Target High</TableHead>
+            <TableHead>Confidence</TableHead>
+            <TableHead>Date</TableHead>
+            <TableHead>Status</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {trades.map((p: any) => {
+            const symbol = isCrypto ? p.stock.replace('CRYPTO_', '') : p.stock;
+            return (
+              <TableRow key={p.id}>
+                <TableCell className="font-medium">
+                  <div className="flex items-center space-x-2">
+                    {isCrypto
+                      ? <Bitcoin className="h-4 w-4 text-orange-500" />
+                      : <div className="w-4 h-4 bg-blue-500 rounded-full" />}
+                    <span>{symbol}</span>
+                  </div>
+                </TableCell>
+                <TableCell>₹{p.currentPrice?.toFixed(2) ?? '—'}</TableCell>
+                <TableCell className="text-red-600">₹{p.predLow?.toFixed(2) ?? '—'}</TableCell>
+                <TableCell className="text-green-600">₹{p.predHigh?.toFixed(2) ?? '—'}</TableCell>
+                <TableCell className={getConfidenceColor(p.confidence)}>
+                  {p.confidence?.toFixed(1)}%
+                </TableCell>
+                <TableCell>{p.createdAt ? new Date(p.createdAt).toLocaleDateString('en-IN') : '—'}</TableCell>
+                <TableCell>{getStatusBadge(p.isActive)}</TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
     );
   };
 
-  const totalPnL = trades.reduce((sum, trade) => sum + trade.pnl, 0);
-  const activeTrades = trades.filter(trade => trade.status === 'ACTIVE').length;
-  const totalTrades = trades.length;
-  const winRate = ((trades.filter(trade => trade.pnl > 0).length / totalTrades) * 100).toFixed(1);
-
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-4">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setLocation('/')}
-            className="flex items-center"
-            data-testid="button-back"
-          >
-            <ChevronLeft className="h-4 w-4 mr-1" />
-            Back to Dashboard
-          </Button>
-          <div className="border-l pl-4">
-            <h1 className="text-2xl font-bold text-gray-900" data-testid="text-page-title">Trading History</h1>
-            <p className="text-gray-600" data-testid="text-page-description">
-              Track your trading performance and history
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center space-x-2">
-          <Button variant="outline" size="sm">
-            <Download className="h-4 w-4 mr-1" />
-            Export
-          </Button>
-          <Filter className="h-4 w-4 text-gray-500" />
-          <select 
-            value={filter} 
-            onChange={(e) => setFilter(e.target.value)}
-            className="border border-gray-300 rounded-md px-3 py-1 text-sm"
-          >
-            <option value="all">All Trades</option>
-            <option value="active">Active</option>
-            <option value="closed">Closed</option>
-            <option value="stock">Stocks Only</option>
-            <option value="crypto">Crypto Only</option>
-          </select>
+      <div className="flex items-center space-x-4">
+        <Button variant="ghost" size="sm" onClick={() => setLocation('/')}>
+          <ChevronLeft className="h-4 w-4 mr-1" />Back to Dashboard
+        </Button>
+        <div className="border-l pl-4">
+          <h1 className="text-2xl font-bold text-gray-900">Trading History</h1>
+          <p className="text-gray-600">Track your trading performance and history</p>
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Total P&L</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${totalPnL > 0 ? 'text-green-600' : 'text-red-600'}`}>
-              ₹{totalPnL.toLocaleString('en-IN')}
-            </div>
-            <p className="text-sm text-gray-500">All time</p>
-          </CardContent>
+      {/* Real stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card><CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Total Predictions</CardTitle></CardHeader>
+          <CardContent><div className="text-2xl font-bold text-gray-900">{totalTrades}</div><p className="text-sm text-gray-500">All time</p></CardContent>
         </Card>
-        
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Active Trades</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-blue-600">{activeTrades}</div>
-            <p className="text-sm text-gray-500">Currently open</p>
-          </CardContent>
+        <Card><CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Active</CardTitle></CardHeader>
+          <CardContent><div className="text-2xl font-bold text-blue-600">{activeTrades}</div><p className="text-sm text-gray-500">Currently active</p></CardContent>
         </Card>
-        
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Total Trades</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-gray-900">{totalTrades}</div>
-            <p className="text-sm text-gray-500">This month</p>
-          </CardContent>
+        <Card><CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Avg Confidence</CardTitle></CardHeader>
+          <CardContent><div className="text-2xl font-bold text-green-600">{avgConfidence}%</div><p className="text-sm text-gray-500">Across all predictions</p></CardContent>
         </Card>
-        
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Win Rate</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-purple-600">{winRate}%</div>
-            <p className="text-sm text-gray-500">Success rate</p>
-          </CardContent>
+        <Card><CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Bullish Rate</CardTitle></CardHeader>
+          <CardContent><div className="text-2xl font-bold text-purple-600">{winRate}%</div><p className="text-sm text-gray-500">Upward predictions</p></CardContent>
         </Card>
       </div>
 
-      <Tabs defaultValue="table" className="w-full">
+      <Tabs defaultValue="stocks">
         <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="table">Table View</TabsTrigger>
-          <TabsTrigger value="charts">Performance Charts</TabsTrigger>
+          <TabsTrigger value="stocks">Stock Predictions ({stockTrades.length})</TabsTrigger>
+          <TabsTrigger value="crypto">Crypto Predictions ({cryptoTrades.length})</TabsTrigger>
         </TabsList>
-        
-        <TabsContent value="table">
+
+        <TabsContent value="stocks">
           <Card>
-            <CardHeader>
-              <CardTitle>Trade History</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle>Stock Prediction History</CardTitle></CardHeader>
             <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Symbol</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Quantity</TableHead>
-                    <TableHead>Entry Price</TableHead>
-                    <TableHead>Current Price</TableHead>
-                    <TableHead>Date</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>P&L</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredTrades.map((trade) => (
-                    <TableRow key={trade.id}>
-                      <TableCell className="font-medium">
-                        <div className="flex items-center space-x-2">
-                          {trade.category === 'crypto' ? (
-                            <Bitcoin className="h-4 w-4 text-orange-500" />
-                          ) : (
-                            <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
-                          )}
-                          <div>
-                            <div className="font-medium">{trade.symbol}</div>
-                            <div className="text-sm text-gray-500">{trade.name}</div>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={trade.type === 'BUY' ? 'default' : 'secondary'}>
-                          {trade.type}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>{trade.quantity}</TableCell>
-                      <TableCell>{trade.currency}{trade.price.toLocaleString(trade.currency === '$' ? 'en-US' : 'en-IN')}</TableCell>
-                      <TableCell>{trade.currency}{trade.currentPrice.toLocaleString(trade.currency === '$' ? 'en-US' : 'en-IN')}</TableCell>
-                      <TableCell>{new Date(trade.date).toLocaleDateString('en-IN')}</TableCell>
-                      <TableCell>{getStatusBadge(trade.status)}</TableCell>
-                      <TableCell>{getPnLDisplay(trade.pnl, trade.pnlPercent, trade.currency)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              {isLoading
+                ? <div className="flex justify-center py-8"><div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" /></div>
+                : renderTable(stockTrades, false)}
             </CardContent>
           </Card>
         </TabsContent>
-        
-        <TabsContent value="charts">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>P&L Trend</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-[300px] flex items-center justify-center text-gray-500">
-                  P&L Chart will be rendered here
-                </div>
-              </CardContent>
-            </Card>
-            
-            <Card>
-              <CardHeader>
-                <CardTitle>Trade Distribution</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-[300px] flex items-center justify-center text-gray-500">
-                  Trade Distribution Chart will be rendered here
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+
+        <TabsContent value="crypto">
+          <Card>
+            <CardHeader><CardTitle>Crypto Prediction History</CardTitle></CardHeader>
+            <CardContent>
+              {isLoading
+                ? <div className="flex justify-center py-8"><div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" /></div>
+                : renderTable(cryptoTrades, true)}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>
