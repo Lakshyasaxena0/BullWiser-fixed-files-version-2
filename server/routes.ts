@@ -638,7 +638,85 @@ export function registerRoutes(app: Express): Server {
       res.status(500).json({ message: 'Error fetching learning history' });
     }
   });
+// ── GET user feedback ────────────────────────────────────────────
+  app.get('/api/user/feedback', isAuthenticated, async (req: any, res) => {
+    try {
+      res.json(await storage.getUserFeedback(req.user.id));
+    } catch (error) {
+      res.status(500).json({ message: "Error fetching feedback" });
+    }
+  });
 
+  // ── Update profile ───────────────────────────────────────────────
+  app.put('/api/user/profile', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { firstName, lastName, email, profileImageUrl } = req.body;
+      const [updated] = await db.update(users)
+        .set({ firstName: firstName || null, lastName: lastName || null, email: email || null, profileImageUrl: profileImageUrl || null, updatedAt: new Date() })
+        .where(eq(users.id, userId))
+        .returning();
+      if (!updated) return res.status(404).json({ message: "User not found" });
+      const { password: _, ...u } = updated;
+      res.json(u);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update profile" });
+    }
+  });
+
+  // ── Change password ──────────────────────────────────────────────
+  app.put('/api/user/password', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { currentPassword, newPassword } = req.body;
+      const [userRecord] = await db.select().from(users).where(eq(users.id, userId));
+      if (!userRecord) return res.status(404).json({ message: "User not found" });
+      const { scrypt: sc, timingSafeEqual: tse } = await import('crypto');
+      const { promisify } = await import('util');
+      const scryptAsync = promisify(sc);
+      const [hashed, salt] = userRecord.password.split('.');
+      const currentBuf = Buffer.from(hashed, 'hex');
+      const suppliedBuf = (await scryptAsync(currentPassword, salt, 64)) as Buffer;
+      if (!tse(currentBuf, suppliedBuf)) return res.status(400).json({ message: "Current password is incorrect" });
+      const { randomBytes } = await import('crypto');
+      const newSalt = randomBytes(16).toString('hex');
+      const newBuf = (await scryptAsync(newPassword, newSalt, 64)) as Buffer;
+      await db.update(users).set({ password: `${newBuf.toString('hex')}.${newSalt}`, updatedAt: new Date() }).where(eq(users.id, userId));
+      res.json({ message: "Password updated successfully" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to change password" });
+    }
+  });
+
+  // ── Export user data ─────────────────────────────────────────────
+  app.get('/api/user/export', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const [allPredictions, allSubscriptions, allFeedback, allWatchlist] = await Promise.all([
+        storage.getUserPredictions(userId),
+        storage.getUserSubscriptions(userId),
+        storage.getUserFeedback(userId),
+        storage.getUserWatchlist(userId),
+      ]);
+      const { password: _pw, ...userWithoutPassword } = req.user;
+      res.setHeader('Content-Disposition', `attachment; filename="bullwiser-${new Date().toISOString().split('T')[0]}.json"`);
+      res.json({ user: userWithoutPassword, predictions: allPredictions, subscriptions: allSubscriptions, feedback: allFeedback, watchlist: allWatchlist, exportedAt: new Date().toISOString() });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to export data" });
+    }
+  });
+
+  // ── Delete account ───────────────────────────────────────────────
+  app.delete('/api/user/account', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      await db.delete(users).where(eq(users.id, userId));
+      req.logout(() => {});
+      res.json({ message: "Account deleted successfully" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete account" });
+    }
+  });
   app.post('/api/notifications/subscribe', isAuthenticated, async (req: any, res) => {
     res.json({ status: 'success', message: 'Subscription stored' });
   });
