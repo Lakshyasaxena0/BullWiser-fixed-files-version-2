@@ -3,7 +3,6 @@ import { useAuth } from "@/hooks/useAuth";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { useEffect } from "react";
-import { isUnauthorizedError } from "@/lib/authUtils";
 
 import StatsCards from "@/components/dashboard/stats-cards";
 import MarketOverview from "@/components/dashboard/market-overview";
@@ -19,128 +18,68 @@ export default function Dashboard() {
   const { isAuthenticated, isLoading } = useAuth();
   const [, setLocation] = useLocation();
 
-  // Redirect to home if not authenticated
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      toast({
-        title: "Unauthorized",
-        description: "You are logged out. Logging in again...",
-        variant: "destructive",
-      });
-      setTimeout(() => {
-        window.location.href = "/api/login";
-      }, 500);
-      return;
+      toast({ title: "Unauthorized", description: "You are logged out. Logging in again...", variant: "destructive" });
+      setTimeout(() => { window.location.href = "/api/login"; }, 500);
     }
   }, [isAuthenticated, isLoading, toast]);
 
-  const { data: marketData } = useQuery({
-    queryKey: ["/api/market/overview"],
-    enabled: isAuthenticated,
-  });
+  const { data: marketData } = useQuery({ queryKey: ["/api/market/overview"], enabled: isAuthenticated });
+  const { data: activePredictions } = useQuery({ queryKey: ["/api/user/predictions/active"], enabled: isAuthenticated });
+  const { data: subscriptions } = useQuery({ queryKey: ["/api/user/subscriptions"], enabled: isAuthenticated });
+  const { data: cryptoOverview } = useQuery({ queryKey: ["/api/crypto/overview"], enabled: isAuthenticated, staleTime: 60000 });
 
-  const { data: activePredictions } = useQuery({
-    queryKey: ["/api/user/predictions/active"],
-    enabled: isAuthenticated,
-  });
-
-  const { data: subscriptions } = useQuery({
-    queryKey: ["/api/user/subscriptions"],
-    enabled: isAuthenticated,
-  });
-
-  const { data: cryptoOverview } = useQuery({
-    queryKey: ["/api/crypto/overview"],
-    enabled: isAuthenticated,
-    staleTime: 60000,
-  });
+  // Get active subscription for renewal date
+  const activeSubscription = (subscriptions as any[])?.find((s: any) => new Date(s.endTs * 1000) > new Date());
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
-      </div>
-    );
+    return <div className="flex items-center justify-center h-full"><div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" /></div>;
   }
 
   return (
     <div className="space-y-6">
-      {/* Dashboard Stats */}
-      <StatsCards 
-        activePredictions={activePredictions?.length || 0}
-        subscriptions={subscriptions}
-      />
+      <StatsCards activePredictions={(activePredictions as any[])?.length || 0} subscriptions={subscriptions} />
 
-      {/* Market Overview Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div>
-          <MarketOverview marketData={marketData} />
-        </div>
-        <div>
-          <StockRatePanel />
-        </div>
+        <MarketOverview marketData={marketData} />
+        <StockRatePanel />
       </div>
 
-      {/* Charts and Analytics */}
       <Charts />
 
-      {/* Trending Cryptocurrencies */}
-      {cryptoOverview && (
+      {/* Trending Cryptocurrencies — Top 3 Gainers only */}
+      {cryptoOverview && (cryptoOverview as any).topGainers?.length > 0 && (
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-gray-900">Trending Cryptocurrencies</h3>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setLocation('/cryptocurrencies')}
-              className="text-orange-600 border-orange-200 hover:bg-orange-50"
-            >
+            <Button variant="outline" size="sm" onClick={() => setLocation('/cryptocurrencies')} className="text-orange-600 border-orange-200 hover:bg-orange-50">
               View All
             </Button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-2">Top Gainers</h4>
-              <div className="space-y-2">
-                {cryptoOverview.topGainers?.slice(0, 3).map((crypto: any) => (
-                  <div key={crypto.symbol} className="flex items-center justify-between text-sm">
-                    <span className="font-medium">{crypto.symbol}</span>
-                    <span className="text-green-600">+{crypto.changePercent24h.toFixed(2)}%</span>
+          <div className="space-y-3">
+            <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Top 3 Gainers</p>
+            {(cryptoOverview as any).topGainers?.slice(0, 3).map((crypto: any) => (
+              <div key={crypto.symbol} className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
+                <div className="flex items-center space-x-3">
+                  <div className="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center">
+                    <span className="text-xs font-bold text-orange-600">{crypto.symbol?.substring(0, 2)}</span>
                   </div>
-                ))}
-              </div>
-            </div>
-            <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-2">Most Active</h4>
-              <div className="space-y-2">
-                {cryptoOverview.mostActive?.slice(0, 3).map((crypto: any) => (
-                  <div key={crypto.symbol} className="flex items-center justify-between text-sm">
-                    <span className="font-medium">{crypto.symbol}</span>
-                    <span className="text-blue-600">${(crypto.volume24h / 1e9).toFixed(1)}B</span>
+                  <div>
+                    <p className="font-semibold text-sm text-gray-900">{crypto.symbol}</p>
+                    <p className="text-xs text-gray-500">{crypto.name}</p>
                   </div>
-                ))}
-              </div>
-            </div>
-            <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-2">Market Cap</h4>
-              <div className="space-y-2">
-                <div className="text-sm">
-                  <span className="text-gray-600">Total: </span>
-                  <span className="font-medium">${(cryptoOverview.totalMarketCap / 1e12).toFixed(2)}T</span>
                 </div>
-                <div className="text-sm">
-                  <span className="text-gray-600">24h Change: </span>
-                  <span className={`font-medium ${cryptoOverview.marketCapChange24h > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {cryptoOverview.marketCapChange24h > 0 ? '+' : ''}{cryptoOverview.marketCapChange24h.toFixed(2)}%
-                  </span>
+                <div className="text-right">
+                  <p className="font-semibold text-sm">${crypto.lastPrice?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                  <p className="text-green-600 text-xs font-medium">+{crypto.changePercent24h?.toFixed(2)}%</p>
                 </div>
               </div>
-            </div>
+            ))}
           </div>
         </div>
       )}
 
-      {/* Recent Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
           <ActivityFeed />
@@ -148,39 +87,37 @@ export default function Dashboard() {
         <div className="space-y-6">
           <div className="bg-gray-100 border border-gray-200 rounded-xl p-6 text-gray-800">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">Premium Plan</h3>
+              <h3 className="text-lg font-semibold text-gray-900">
+                {activeSubscription ? `${activeSubscription.mode} Plan` : "No Active Plan"}
+              </h3>
               <i className="fas fa-crown text-xl text-yellow-500"></i>
             </div>
             <div className="space-y-3">
               <div className="flex justify-between">
                 <span className="text-gray-600">Usage</span>
-                <span className="font-semibold text-gray-900">{activePredictions?.length || 0}/200</span>
+                <span className="font-semibold text-gray-900">{(activePredictions as any[])?.length || 0}/200</span>
               </div>
               <div className="w-full bg-gray-300 rounded-full h-2">
-                <div 
-                  className="bg-gray-600 h-2 rounded-full" 
-                  style={{ width: `${Math.min(((activePredictions?.length || 0) / 200) * 100, 100)}%` }}
-                />
+                <div className="bg-gray-600 h-2 rounded-full" style={{ width: `${Math.min((((activePredictions as any[])?.length || 0) / 200) * 100, 100)}%` }} />
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">Renewal</span>
-                <span className="font-semibold text-gray-900">Dec 25, 2024</span>
+                <span className="font-semibold text-gray-900">
+                  {activeSubscription
+                    ? new Date(activeSubscription.endTs * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                    : "—"}
+                </span>
               </div>
             </div>
-            <button 
-              onClick={() => setLocation('/plans')}
-              className="w-full bg-white text-primary font-semibold py-2 px-4 rounded-lg mt-4 hover:bg-gray-100 transition-colors duration-200"
-              data-testid="button-manage-plan"
-            >
-              Manage Plan
+            <button onClick={() => setLocation('/plans')} className="w-full bg-white text-primary font-semibold py-2 px-4 rounded-lg mt-4 hover:bg-gray-100 transition-colors duration-200">
+              {activeSubscription ? "Manage Plan" : "Choose Plan"}
             </button>
           </div>
           <TrainingStatus />
         </div>
       </div>
 
-      {/* Subscribe Prompt at Bottom (if no subscription) */}
-      {(!subscriptions || subscriptions.length === 0) && (
+      {(!subscriptions || (subscriptions as any[]).length === 0) && (
         <div className="bg-gradient-to-r from-blue-100 to-blue-200 border border-blue-300 rounded-lg p-4 text-center">
           <div className="flex items-center justify-center gap-3">
             <TrendingUp className="h-5 w-5 text-blue-600" />
@@ -188,10 +125,7 @@ export default function Dashboard() {
               <h4 className="font-semibold text-blue-900 text-sm">Subscribe to Start Predicting</h4>
               <p className="text-blue-700 text-xs">Get AI-powered stock predictions with real-time data</p>
             </div>
-            <button 
-              onClick={() => setLocation('/plans')}
-              className="bg-blue-600 text-white font-medium py-2 px-4 rounded-lg text-sm hover:bg-blue-700 transition-colors duration-200 ml-auto"
-            >
+            <button onClick={() => setLocation('/plans')} className="bg-blue-600 text-white font-medium py-2 px-4 rounded-lg text-sm hover:bg-blue-700 ml-auto">
               Choose Plan
             </button>
           </div>
