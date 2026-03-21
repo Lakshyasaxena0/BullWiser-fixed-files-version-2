@@ -346,10 +346,11 @@ export class StockDataService {
     }
   }
 
-  async searchStocks(query: string): Promise<StockQuote[]> {
+  async searchStocks(query: string): Promise<Partial<StockQuote>[]> {
     try {
       const allStocks = Object.entries(NSE_COMPANY_NAMES).map(([symbol, companyName]) => ({ symbol, companyName }));
       const queryLower = query.toLowerCase().trim();
+
       const matched = allStocks
         .filter(({ symbol, companyName }) =>
           symbol.toLowerCase().includes(queryLower) ||
@@ -363,12 +364,47 @@ export class StockDataService {
           return a.symbol.localeCompare(b.symbol);
         })
         .slice(0, 10);
-      const quotes: StockQuote[] = [];
-      for (const stock of matched) {
-        const quote = await this.getNSEQuote(stock.symbol);
-        if (quote) quotes.push({ ...quote, companyName: stock.companyName });
-      }
-      return quotes;
+
+      // ── FIX: Fetch quotes in parallel with a timeout, but always
+      //         return the name-matched result even if the live quote fails.
+      const results = await Promise.all(
+        matched.map(async ({ symbol, companyName }) => {
+          try {
+            // Race the Yahoo Finance call against a 3-second timeout
+            const quotePromise = this.getNSEQuote(symbol);
+            const timeoutPromise = new Promise<null>(resolve =>
+              setTimeout(() => resolve(null), 3000)
+            );
+            const quote = await Promise.race([quotePromise, timeoutPromise]);
+
+            if (quote) {
+              // Live data available — return full quote with company name
+              return { ...quote, companyName };
+            }
+          } catch {
+            // Swallow individual fetch errors
+          }
+
+          // Fallback: return the stock from our known list without a live price
+          // The frontend will still show the result so the user can select it.
+          return {
+            symbol,
+            companyName,
+            exchange: 'NSE' as const,
+            lastPrice: 0,          // 0 signals "price unavailable"
+            change: 0,
+            changePercent: 0,
+            volume: 0,
+            openPrice: 0,
+            highPrice: 0,
+            lowPrice: 0,
+            previousClose: 0,
+            timestamp: new Date(),
+          } satisfies Partial<StockQuote>;
+        })
+      );
+
+      return results;
     } catch (error) {
       console.error('Error searching stocks:', error);
       return [];
