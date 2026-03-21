@@ -26,7 +26,6 @@ export default function FeedbackForm() {
         title: "Thank you for your feedback!",
         description: "Your input helps improve our prediction accuracy.",
       });
-      // Reset form
       setFeedbackStock("");
       setActualPrice("");
       setFeedbackRating("yes");
@@ -65,7 +64,7 @@ export default function FeedbackForm() {
       stock: feedbackStock.toUpperCase(),
       when: new Date().toISOString(),
       actualPrice: actualPrice ? parseFloat(actualPrice) : null,
-      useful: feedbackRating
+      useful: feedbackRating,
     });
   };
 
@@ -90,7 +89,7 @@ export default function FeedbackForm() {
               id="feedbackStock"
               value={feedbackStock}
               onChange={(e) => setFeedbackStock(e.target.value.toUpperCase())}
-              placeholder="e.g., SUZLON"
+              placeholder="Enter symbol"
               data-testid="input-feedback-stock"
             />
           </div>
@@ -103,7 +102,7 @@ export default function FeedbackForm() {
               step="0.01"
               value={actualPrice}
               onChange={(e) => setActualPrice(e.target.value)}
-              placeholder="₹52.75"
+              placeholder="Enter price"
               data-testid="input-actual-price"
             />
           </div>
