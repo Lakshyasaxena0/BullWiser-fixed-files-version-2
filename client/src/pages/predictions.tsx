@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { TrendingUp, TrendingDown, Clock, Target, Calendar, ChevronLeft, Search, Zap, AlertTriangle } from "lucide-react";
+import { TrendingUp, TrendingDown, Clock, Target, Calendar, ChevronLeft, Search, Zap, AlertTriangle, BookmarkPlus, BookmarkCheck } from "lucide-react";
 import { useLocation } from "wouter";
 import FeedbackForm from "@/components/dashboard/feedback-form";
 
@@ -23,7 +23,6 @@ export default function Predictions() {
   const [addedToWatchlist, setAddedToWatchlist] = useState<Set<string>>(new Set());
   const queryClient = useQueryClient();
 
-  // Prediction form state
   const [predType, setPredType] = useState<"stock" | "crypto">("stock");
   const [symbol, setSymbol] = useState("");
   const [targetDate, setTargetDate] = useState("");
@@ -42,14 +41,9 @@ export default function Predictions() {
     }
   }, [isAuthenticated, isLoading]);
 
-  // Search stocks/crypto
   useEffect(() => {
     const t = setTimeout(async () => {
-      if (searchQuery.length < 2) {
-        setSearchResults([]);
-        setSearchAttempted(false);
-        return;
-      }
+      if (searchQuery.length < 2) { setSearchResults([]); setSearchAttempted(false); return; }
       setIsSearching(true);
       setSearchAttempted(false);
       try {
@@ -59,36 +53,14 @@ export default function Predictions() {
         const res = await fetch(endpoint);
         if (res.ok) setSearchResults(await res.json() || []);
         else setSearchResults([]);
-      } catch {
-        setSearchResults([]);
-      } finally {
-        setIsSearching(false);
-        setSearchAttempted(true);
-      }
+      } catch { setSearchResults([]); }
+      finally { setIsSearching(false); setSearchAttempted(true); }
     }, 300);
     return () => clearTimeout(t);
   }, [searchQuery, predType]);
 
-  const { data: predictions, isLoading: predsLoading } = useQuery({
-    queryKey: ["/api/user/predictions"],
-    enabled: isAuthenticated,
-  });
-
-  const { data: activePredictions } = useQuery({
-    queryKey: ["/api/user/predictions/active"],
-    enabled: isAuthenticated,
-  });
-
-  const { data: feedback } = useQuery({
-    queryKey: ["/api/user/feedback"],
-    enabled: isAuthenticated,
-  });
-
-  const realSuccessRate = (() => {
-    if (!feedback || (feedback as any[]).length === 0) return null;
-    const useful = (feedback as any[]).filter((f: any) => f.useful === 1).length;
-    return Math.round((useful / (feedback as any[]).length) * 100);
-  })();
+  const { data: predictions, isLoading: predsLoading } = useQuery({ queryKey: ["/api/user/predictions"], enabled: isAuthenticated });
+  const { data: activePredictions } = useQuery({ queryKey: ["/api/user/predictions/active"], enabled: isAuthenticated });
 
   const getTargetDateFromHorizon = () => {
     if (targetDate) return targetDate;
@@ -125,14 +97,22 @@ export default function Predictions() {
     },
   });
 
+  // ── FIX 2: Single source-of-truth for watchlist key ──────────────────────
+  // Previously the mutation called with CRYPTO_BTC but disabled checked predResult.crypto (BTC)
+  // causing a mismatch. Now both use getWatchlistKey() so they always match.
+  const getWatchlistKey = (result: any): string => {
+    if (!result) return "";
+    return result.stock ? result.stock : `CRYPTO_${result.crypto || result.cryptoSymbol}`;
+  };
+
   const addToWatchlistMutation = useMutation({
-    mutationFn: (stock: string) => {
-      setAddingToWatchlist(stock);
-      return apiRequest("POST", "/api/user/watchlist", { stock });
+    mutationFn: (watchlistKey: string) => {
+      setAddingToWatchlist(watchlistKey);
+      return apiRequest("POST", "/api/user/watchlist", { stock: watchlistKey });
     },
-    onSuccess: (_, stock) => {
-      toast({ title: "Added to watchlist!" });
-      setAddedToWatchlist(prev => new Set([...prev, stock]));
+    onSuccess: (_, watchlistKey) => {
+      toast({ title: "Added to Watchlist!", description: `${watchlistKey.replace("CRYPTO_", "")} is now being tracked.` });
+      setAddedToWatchlist(prev => new Set([...prev, watchlistKey]));
       setAddingToWatchlist(null);
       queryClient.invalidateQueries({ queryKey: ["/api/user/watchlist"] });
     },
@@ -153,6 +133,7 @@ export default function Predictions() {
   const PredictionCard = ({ prediction, isPast = false }: { prediction: any; isPast?: boolean }) => {
     const midPrice = (prediction.predLow + prediction.predHigh) / 2;
     const isUptrend = midPrice > prediction.currentPrice;
+    const wKey = prediction.stock;
     return (
       <Card className={`hover:shadow-lg transition-shadow ${isPast ? "opacity-80" : ""}`}>
         <CardHeader className="pb-3">
@@ -180,14 +161,55 @@ export default function Predictions() {
             {prediction.targetDate && <div className="flex items-center"><Target className="h-4 w-4 mr-1" />{new Date(prediction.targetDate).toLocaleDateString("en-IN")}</div>}
           </div>
           {!isPast && (
-            <Button size="sm" variant={addedToWatchlist.has(prediction.stock) ? "default" : "outline"} className="w-full"
-              onClick={() => addToWatchlistMutation.mutate(prediction.stock)}
-              disabled={addingToWatchlist === prediction.stock || addedToWatchlist.has(prediction.stock)}>
-              {addingToWatchlist === prediction.stock ? "Adding..." : addedToWatchlist.has(prediction.stock) ? "Added ✓" : "Add to Watchlist"}
+            <Button size="sm"
+              variant={addedToWatchlist.has(wKey) ? "default" : "outline"}
+              className={`w-full gap-2 ${addedToWatchlist.has(wKey) ? "bg-green-600 hover:bg-green-700 text-white" : ""}`}
+              onClick={() => addToWatchlistMutation.mutate(wKey)}
+              disabled={addingToWatchlist === wKey || addedToWatchlist.has(wKey)}>
+              {addingToWatchlist === wKey ? "Adding..." : addedToWatchlist.has(wKey) ? <><BookmarkCheck className="h-3 w-3" /> Added</> : "Add to Watchlist"}
             </Button>
           )}
         </CardContent>
       </Card>
+    );
+  };
+
+  // ── FIX 1: Sliding toggle switch ──────────────────────────────────────────
+  const PredTypeToggle = () => {
+    const isStock = predType === "stock";
+    return (
+      <div className="space-y-2">
+        <Label className="text-sm font-medium text-gray-700">Prediction Type</Label>
+        <div
+          className="relative flex items-center w-full rounded-xl border border-gray-200 bg-gray-100 p-1 cursor-pointer select-none"
+          onClick={() => {
+            const next = isStock ? "crypto" : "stock";
+            setPredType(next as "stock" | "crypto");
+            setSymbol(""); setSearchQuery(""); setSearchResults([]); setSearchAttempted(false);
+          }}
+        >
+          {/* Animated sliding pill */}
+          <div className={`absolute top-1 bottom-1 w-[calc(50%-4px)] rounded-lg shadow-sm transition-all duration-300 ease-in-out
+            ${isStock ? "left-1 bg-blue-600" : "left-[calc(50%+3px)] bg-orange-500"}`}
+          />
+          <div className={`relative z-10 flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-semibold transition-colors duration-300
+            ${isStock ? "text-white" : "text-gray-400"}`}>
+            <TrendingUp className="h-4 w-4" />
+            Stocks
+          </div>
+          <div className={`relative z-10 flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-semibold transition-colors duration-300
+            ${!isStock ? "text-white" : "text-gray-400"}`}>
+            <span className="text-base leading-none font-bold">₿</span>
+            Crypto
+          </div>
+        </div>
+        <p className="text-xs text-center text-gray-500">
+          Predicting:{" "}
+          <span className={`font-semibold ${isStock ? "text-blue-600" : "text-orange-500"}`}>
+            {isStock ? "📈 Indian Stocks (NSE / BSE)" : "₿ Cryptocurrencies"}
+          </span>
+        </p>
+      </div>
     );
   };
 
@@ -210,27 +232,14 @@ export default function Predictions() {
           <TabsTrigger value="past">Past ({pastPredictions.length})</TabsTrigger>
         </TabsList>
 
-        {/* ── Make Prediction Tab ── */}
         <TabsContent value="make" className="mt-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <Card>
               <CardHeader><CardTitle>New Prediction</CardTitle></CardHeader>
               <CardContent className="space-y-4">
 
-                {/* Type selector */}
-                <div className="grid grid-cols-2 gap-2">
-                  <Button variant={predType === "stock" ? "default" : "outline"}
-                    onClick={() => { setPredType("stock"); setSymbol(""); setSearchQuery(""); setSearchResults([]); setSearchAttempted(false); }}>
-                    <TrendingUp className="h-4 w-4 mr-2" />Stocks
-                  </Button>
-                  <Button variant={predType === "crypto" ? "default" : "outline"}
-                    className={predType === "crypto" ? "bg-orange-500 hover:bg-orange-600" : ""}
-                    onClick={() => { setPredType("crypto"); setSymbol(""); setSearchQuery(""); setSearchResults([]); setSearchAttempted(false); }}>
-                    <span className="mr-2">₿</span>Crypto
-                  </Button>
-                </div>
+                <PredTypeToggle />
 
-                {/* Search */}
                 <div className="space-y-2">
                   <Label>{predType === "stock" ? "Search Stock (NSE/BSE)" : "Search Cryptocurrency"}</Label>
                   <div className="relative">
@@ -239,18 +248,14 @@ export default function Predictions() {
                       placeholder={predType === "stock" ? "e.g. RELIANCE, TCS, INFY..." : "e.g. BTC, ETH, ADA..."}
                       value={searchQuery}
                       onChange={e => { setSearchQuery(e.target.value); setSymbol(""); }}
-                      className="pl-10"
-                      autoComplete="off"
+                      className="pl-10" autoComplete="off"
                     />
                   </div>
-
-                  {/* Search results dropdown */}
                   {searchQuery.length > 1 && (
                     <div className="relative">
                       {isSearching ? (
                         <div className="border rounded-md p-3 bg-white shadow text-sm text-gray-500 flex items-center gap-2">
-                          <div className="animate-spin w-4 h-4 border-2 border-primary border-t-transparent rounded-full" />
-                          Searching...
+                          <div className="animate-spin w-4 h-4 border-2 border-primary border-t-transparent rounded-full" />Searching...
                         </div>
                       ) : searchResults.length > 0 ? (
                         <div className="absolute top-1 left-0 right-0 z-50 max-h-64 overflow-y-auto border rounded-md bg-white shadow-lg">
@@ -258,40 +263,25 @@ export default function Predictions() {
                             <button key={r.symbol}
                               onClick={() => { setSymbol(r.symbol); setSearchQuery(r.symbol); setSearchResults([]); setSearchAttempted(false); }}
                               className="w-full px-4 py-3 text-left hover:bg-gray-50 flex justify-between items-center border-b last:border-b-0 text-sm">
-                              <div>
-                                <p className="font-medium">{r.symbol}</p>
-                                <p className="text-gray-500 text-xs">{r.companyName || r.name}</p>
-                              </div>
-                              <p className="font-medium">₹{r.lastPrice?.toFixed(2)}</p>
+                              <div><p className="font-medium">{r.symbol}</p><p className="text-gray-500 text-xs">{r.companyName || r.name}</p></div>
+                              {r.lastPrice > 0 && <p className="font-medium">₹{r.lastPrice?.toFixed(2)}</p>}
                             </button>
                           ))}
                         </div>
                       ) : searchAttempted ? (
-                        /* ── FIX: No results fallback — let user use symbol directly ── */
                         <div className="border rounded-md p-3 bg-white shadow text-sm text-gray-500 space-y-2">
-                          <p>No results found for "<strong>{searchQuery}</strong>"</p>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="w-full text-xs"
-                            onClick={() => {
-                              const s = searchQuery.trim().toUpperCase();
-                              setSymbol(s);
-                              setSearchQuery(s);
-                              setSearchResults([]);
-                              setSearchAttempted(false);
-                            }}>
+                          <p>No results for "<strong>{searchQuery}</strong>"</p>
+                          <Button size="sm" variant="outline" className="w-full text-xs"
+                            onClick={() => { const s = searchQuery.trim().toUpperCase(); setSymbol(s); setSearchQuery(s); setSearchResults([]); setSearchAttempted(false); }}>
                             Use "{searchQuery.toUpperCase()}" directly anyway
                           </Button>
                         </div>
                       ) : null}
                     </div>
                   )}
-
                   {symbol && <p className="text-xs text-green-600 font-medium">✅ Selected: {symbol}</p>}
                 </div>
 
-                {/* Horizon */}
                 <div className="space-y-2">
                   <Label>Prediction Horizon</Label>
                   <Select value={horizon} onValueChange={setHorizon}>
@@ -311,7 +301,6 @@ export default function Predictions() {
                   )}
                 </div>
 
-                {/* Mode */}
                 <div className="space-y-2">
                   <Label>Prediction Mode</Label>
                   <Select value={mode} onValueChange={setMode}>
@@ -323,7 +312,6 @@ export default function Predictions() {
                   </Select>
                 </div>
 
-                {/* Risk */}
                 <div className="space-y-2">
                   <Label>Risk Level</Label>
                   <Select value={riskLevel} onValueChange={setRiskLevel}>
@@ -337,32 +325,18 @@ export default function Predictions() {
                 </div>
 
                 <Button className="w-full" onClick={() => predictMutation.mutate()} disabled={!symbol || predictMutation.isPending}>
-                  {predictMutation.isPending
-                    ? "Generating prediction..."
-                    : `Predict ${symbol || "..."} for ${
-                        horizon === "custom" ? "custom date"
-                        : horizon === "1d" ? "tomorrow"
-                        : horizon === "1w" ? "next week"
-                        : horizon === "1m" ? "next month"
-                        : horizon === "3m" ? "3 months"
-                        : horizon === "6m" ? "6 months"
-                        : "next year"
-                      }`}
+                  {predictMutation.isPending ? "Generating prediction..." :
+                    `Predict ${symbol || "..."} for ${horizon === "custom" ? "custom date" : horizon === "1d" ? "tomorrow" : horizon === "1w" ? "next week" : horizon === "1m" ? "next month" : horizon === "3m" ? "3 months" : horizon === "6m" ? "6 months" : "next year"}`}
                 </Button>
               </CardContent>
             </Card>
 
-            {/* Result card */}
             {predResult ? (
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between">
                     <span>{predResult.stock || predResult.crypto || predResult.cryptoSymbol} — Result</span>
-                    {predResult.confidence && (
-                      <Badge className={getConfidenceColor(predResult.confidence)}>
-                        {predResult.confidence?.toFixed(1)}% confidence
-                      </Badge>
-                    )}
+                    {predResult.confidence && <Badge className={getConfidenceColor(predResult.confidence)}>{predResult.confidence?.toFixed(1)}% confidence</Badge>}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -377,53 +351,49 @@ export default function Predictions() {
                     </div>
                   ) : (
                     <>
-                      {/* ── FIX: Warn when falling back to estimated/mock prices ── */}
                       {!predResult.aiPowered && (
                         <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
                           <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0 text-amber-500" />
-                          <p>
-                            <strong>Estimated prices</strong> — Live market data for{" "}
-                            <strong>{predResult.stock}</strong> could not be fetched. Prices shown are
-                            model-based estimates and may not reflect the actual market rate.
-                          </p>
+                          <p><strong>Estimated prices</strong> — Live market data for <strong>{predResult.stock}</strong> could not be fetched. Prices are model-based estimates.</p>
                         </div>
                       )}
-
                       <div className="grid grid-cols-3 gap-3 text-center">
-                        <div className="bg-gray-50 p-3 rounded">
-                          <p className="text-xs text-gray-500">Current Price</p>
-                          <p className="font-bold">₹{predResult.currentPrice?.toFixed(2)}</p>
-                        </div>
-                        <div className="bg-red-50 p-3 rounded">
-                          <p className="text-xs text-gray-500">Target Low</p>
-                          <p className="font-bold text-red-600">₹{predResult.predLow?.toFixed(2)}</p>
-                        </div>
-                        <div className="bg-green-50 p-3 rounded">
-                          <p className="text-xs text-gray-500">Target High</p>
-                          <p className="font-bold text-green-600">₹{predResult.predHigh?.toFixed(2)}</p>
-                        </div>
+                        <div className="bg-gray-50 p-3 rounded"><p className="text-xs text-gray-500">Current Price</p><p className="font-bold">₹{predResult.currentPrice?.toFixed(2)}</p></div>
+                        <div className="bg-red-50 p-3 rounded"><p className="text-xs text-gray-500">Target Low</p><p className="font-bold text-red-600">₹{predResult.predLow?.toFixed(2)}</p></div>
+                        <div className="bg-green-50 p-3 rounded"><p className="text-xs text-gray-500">Target High</p><p className="font-bold text-green-600">₹{predResult.predHigh?.toFixed(2)}</p></div>
                       </div>
-
                       {predResult.recommendation && (
                         <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
                           <p className="text-sm text-blue-800"><strong>Recommendation:</strong> {predResult.recommendation}</p>
                         </div>
                       )}
-
                       {predResult.direction && (
                         <div className="flex items-center gap-2">
-                          {predResult.direction === "bullish"
-                            ? <TrendingUp className="h-4 w-4 text-green-500" />
-                            : <TrendingDown className="h-4 w-4 text-red-500" />}
+                          {predResult.direction === "bullish" ? <TrendingUp className="h-4 w-4 text-green-500" /> : <TrendingDown className="h-4 w-4 text-red-500" />}
                           <span className="text-sm capitalize font-medium">{predResult.direction} outlook</span>
                         </div>
                       )}
 
-                      <Button variant="outline" className="w-full"
-                        onClick={() => addToWatchlistMutation.mutate(predResult.stock || `CRYPTO_${predResult.crypto}`)}
-                        disabled={addingToWatchlist === (predResult.stock || predResult.crypto) || addedToWatchlist.has(predResult.stock || predResult.crypto)}>
-                        {addedToWatchlist.has(predResult.stock || predResult.crypto) ? "Added to Watchlist ✓" : "Add to Watchlist"}
-                      </Button>
+                      {/* ── FIX 2: Watchlist button with consistent key ── */}
+                      {(() => {
+                        const wKey = getWatchlistKey(predResult);
+                        const isAdded = addedToWatchlist.has(wKey);
+                        const isAdding = addingToWatchlist === wKey;
+                        return (
+                          <Button
+                            variant={isAdded ? "default" : "outline"}
+                            className={`w-full gap-2 ${isAdded ? "bg-green-600 hover:bg-green-700 text-white" : ""}`}
+                            onClick={() => addToWatchlistMutation.mutate(wKey)}
+                            disabled={isAdding || isAdded}
+                          >
+                            {isAdding
+                              ? <><div className="animate-spin w-4 h-4 border-2 border-current border-t-transparent rounded-full" /> Adding...</>
+                              : isAdded
+                              ? <><BookmarkCheck className="h-4 w-4" /> Added to Watchlist</>
+                              : <><BookmarkPlus className="h-4 w-4" /> Add to Watchlist</>}
+                          </Button>
+                        );
+                      })()}
                     </>
                   )}
                 </CardContent>
@@ -438,7 +408,6 @@ export default function Predictions() {
           </div>
         </TabsContent>
 
-        {/* ── Active Tab ── */}
         <TabsContent value="active" className="mt-6">
           {(activePredictions as any[])?.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -447,9 +416,7 @@ export default function Predictions() {
           ) : (
             <Card className="p-12 text-center">
               <div className="space-y-4">
-                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto">
-                  <Clock className="h-8 w-8 text-primary" />
-                </div>
+                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto"><Clock className="h-8 w-8 text-primary" /></div>
                 <h3 className="text-lg font-semibold">No Active Predictions</h3>
                 <p className="text-gray-600">Go to Make Prediction tab to create your first prediction.</p>
                 <Button onClick={() => setActiveTab("make")}>Make a Prediction</Button>
@@ -458,7 +425,6 @@ export default function Predictions() {
           )}
         </TabsContent>
 
-        {/* ── Past Tab ── */}
         <TabsContent value="past" className="mt-6">
           {pastPredictions.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -467,9 +433,7 @@ export default function Predictions() {
           ) : (
             <Card className="p-12 text-center">
               <div className="space-y-4">
-                <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto">
-                  <Calendar className="h-8 w-8 text-gray-400" />
-                </div>
+                <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto"><Calendar className="h-8 w-8 text-gray-400" /></div>
                 <h3 className="text-lg font-semibold">No Past Predictions</h3>
                 <p className="text-gray-600">Completed predictions will appear here.</p>
               </div>
