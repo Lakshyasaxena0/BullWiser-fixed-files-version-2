@@ -15,53 +15,12 @@ import { db } from "./db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
-function mockTechnicalScore(stock: string): number {
-  const seed = Math.abs(stock.split('').reduce((a, b) => a + b.charCodeAt(0), 0)) % 1000;
-  return (seed % 60) + 20;
-}
-
-function astrologyHiddenBias(dt: Date, stock: string): number {
-  const h = dt.getHours();
-  let bias = ((h * 7) % 11) - 5;
-  bias += (Math.abs(stock.split('').reduce((a, b) => a + b.charCodeAt(0), 0)) % 3) - 1;
-  return bias;
-}
-
-function predictPrice(stock: string, whenDt: Date, horizon: string = 'timed') {
-  const basePrice = 50 + (Math.abs(stock.split('').reduce((a, b) => a + b.charCodeAt(0), 0)) % 200) * 0.1;
-  const techScore = mockTechnicalScore(stock);
-  const direction = (techScore - 50) / 50.0;
-  const todMult = 1.0 + (Math.abs(whenDt.getHours() - 13) / 48.0);
-  const astro = astrologyHiddenBias(whenDt, stock) / 100.0;
-  let confidence = Math.min(Math.max(45 + (techScore - 50) * 0.6 + astro * 200, 15), 95);
-  let low, high;
-  if (horizon === 'timed') {
-    const pct = direction * 0.8 * todMult + astro * 2.0;
-    const estPrice = basePrice * (1 + pct / 100.0);
-    low = Math.round(estPrice * 0.995 * 100) / 100;
-    high = Math.round(estPrice * 1.005 * 100) / 100;
-  } else {
-    let band;
-    switch (horizon) {
-      case '6m': band = 0.15; break;
-      case '1y': band = 0.30; break;
-      case '3y': band = 0.60; break;
-      case '5y': band = 1.0; break;
-      default: band = 0.15;
-    }
-    const center = basePrice * (1 + direction * 0.02 + astro * 0.05);
-    low = Math.round(center * (1 - band) * 100) / 100;
-    high = Math.round(center * (1 + band) * 100) / 100;
-    confidence = Math.max(confidence - band * 20, 30);
-  }
-  return {
-    stock, when: whenDt.toISOString(),
-    currentPrice: Math.round(basePrice * 100) / 100,
-    predLow: low, predHigh: high,
-    confidence: Math.round(confidence * 10) / 10,
-    astroBiasApplied: astro !== 0
-  };
-}
+// ── REMOVED: predictPrice() mock function ──────────────────────────────────
+// This was the root cause of fake prices. The function generated prices purely
+// from character codes in the stock symbol name, producing values like ₹56.60
+// for MARUTI regardless of the real market price. It has been removed entirely.
+// The /api/predict route now returns a proper error when live data is unavailable.
+// ──────────────────────────────────────────────────────────────────────────────
 
 function calculateBullwiserPrice(mode: string, tradeType: string, tradesPerDay: number, duration: string, referralCount: number = 0) {
   const tradeTypeRates = { 'low': 700, 'medium': 1400, 'high': 2100 };
@@ -121,7 +80,6 @@ async function runTrainingSimulation() {
 export function registerRoutes(app: Express): Server {
   setupAuth(app);
 
-  // Warmup endpoint
   app.get('/api/warmup', async (req, res) => {
     try {
       await storage.getTrainingStatus();
@@ -159,27 +117,68 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // ── /api/predict — FIXED ────────────────────────────────────────────────────
+  // Changes:
+  //   1. Try NSE quote first, then BSE as fallback (same as /api/stock/:symbol)
+  //   2. If both fail → return 503 with a clear message (no more fake prices)
+  //   3. AI+Astro pipeline always runs on the REAL price
+  // ───────────────────────────────────────────────────────────────────────────
   app.post('/api/predict', isAuthenticated, async (req: any, res) => {
     try {
       const { stock = 'TCS', when } = req.body;
       const userId = req.user.id;
+
+      // Subscription check
       const userSubscriptions = await storage.getUserSubscriptions(userId);
-      const activeStockSubscription = userSubscriptions.find(sub => !sub.mode.includes('crypto') && new Date(sub.endTs * 1000) > new Date());
-      if (!activeStockSubscription) return res.status(403).json({ message: "Active stock trading subscription required", error: "SUBSCRIPTION_REQUIRED", subscriptionType: "stock" });
-      const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
-      const realTimeQuote = await stockDataService.getStockQuote(stock.toUpperCase());
-      if (!realTimeQuote) {
-        const prediction = predictPrice(stock, whenDate);
-        await storage.createPrediction({ userId, stock: prediction.stock, currentPrice: prediction.currentPrice, predLow: prediction.predLow, predHigh: prediction.predHigh, confidence: prediction.confidence, mode: req.body.mode || 'suggestion', riskLevel: req.body.riskLevel || 'medium', targetDate: whenDate });
-        return res.json(prediction);
+      const activeStockSubscription = userSubscriptions.find(
+        sub => !sub.mode.includes('crypto') && new Date(sub.endTs * 1000) > new Date()
+      );
+      if (!activeStockSubscription) {
+        return res.status(403).json({
+          message: "Active stock trading subscription required",
+          error: "SUBSCRIPTION_REQUIRED",
+          subscriptionType: "stock"
+        });
       }
+
+      const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
+      const upperSymbol = stock.toUpperCase();
+
+      // ── Step 1: Fetch real-time quote (NSE first, then BSE) ──────────────
+      let realTimeQuote = await stockDataService.getStockQuote(upperSymbol, 'NSE');
+      if (!realTimeQuote) {
+        console.log(`[Predict] NSE quote failed for ${upperSymbol}, trying BSE...`);
+        realTimeQuote = await stockDataService.getStockQuote(upperSymbol, 'BSE');
+      }
+
+      // ── Step 2: If both exchanges fail → return error, no fake data ──────
+      if (!realTimeQuote) {
+        console.warn(`[Predict] No live quote found for ${upperSymbol} on NSE or BSE`);
+        return res.status(503).json({
+          message: `Live market data for "${upperSymbol}" is currently unavailable. Please verify the symbol is correct (e.g. RELIANCE, TCS, HDFCBANK) and try again in a moment.`,
+          error: "QUOTE_UNAVAILABLE",
+          symbol: upperSymbol,
+          suggestion: "Try checking the symbol in the Stock Rate Checker on the Dashboard first."
+        });
+      }
+
+      // ── Step 3: Run real AI + Astro prediction pipeline ──────────────────
       const currentPrice = realTimeQuote.adjustedPrice || realTimeQuote.lastPrice;
-      const historicalData = await stockDataService.getHistoricalData(stock.toUpperCase(), 30);
-      const enhancedPrediction = await aiService.generateEnhancedPrediction(stock.toUpperCase(), currentPrice, userId, historicalData);
+      const historicalData = await stockDataService.getHistoricalData(upperSymbol, 30);
+      const enhancedPrediction = await aiService.generateEnhancedPrediction(
+        upperSymbol,
+        currentPrice,
+        userId,
+        historicalData
+      );
+
       const isDevMode = process.env.NODE_ENV === 'development';
       const showAstroDetails = isDevMode && req.user?.role === 'developer';
+
       const finalPrediction = {
-        stock: stock.toUpperCase(), when: whenDate.toISOString(), currentPrice,
+        stock: upperSymbol,
+        when: whenDate.toISOString(),
+        currentPrice,
         predLow: enhancedPrediction.prediction?.priceTarget?.low || currentPrice * 0.98,
         predHigh: enhancedPrediction.prediction?.priceTarget?.high || currentPrice * 1.02,
         confidence: enhancedPrediction.combinedConfidence || enhancedPrediction.confidence || 60,
@@ -189,17 +188,41 @@ export function registerRoutes(app: Express): Server {
         marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed',
         keyRisks: enhancedPrediction.warnings || enhancedPrediction.analysis?.keyRisks || [],
         recommendation: enhancedPrediction.astroRecommendation || enhancedPrediction.analysis?.recommendation || 'Hold and observe',
-        reasoning: enhancedPrediction.reasoning || 'Advanced AI analysis',
+        reasoning: enhancedPrediction.reasoning || 'Advanced AI + Astrology analysis',
         aiPowered: enhancedPrediction.metadata?.aiEnabled || false,
         feedbackEnhanced: enhancedPrediction.metadata?.feedbackLearningApplied || false,
-        ...(showAstroDetails && { astrologyBias: realTimeQuote.astrologyBias || 0, horaInfluence: realTimeQuote.horaInfluence, astroFactors: enhancedPrediction.astroFactors, astroStrength: enhancedPrediction.astroStrength, astroPowered: true })
+        companyName: realTimeQuote.companyName,
+        ...(showAstroDetails && {
+          astrologyBias: realTimeQuote.astrologyBias || 0,
+          horaInfluence: realTimeQuote.horaInfluence,
+          astroFactors: enhancedPrediction.astroFactors,
+          astroStrength: enhancedPrediction.astroStrength,
+          astroPowered: true
+        })
       };
-      await storage.createPrediction({ userId, stock: finalPrediction.stock, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: req.body.mode || 'ai-astro-combined', riskLevel: req.body.riskLevel || 'medium', targetDate: whenDate });
+
+      // ── Step 4: Save to DB ────────────────────────────────────────────────
+      await storage.createPrediction({
+        userId,
+        stock: finalPrediction.stock,
+        currentPrice: finalPrediction.currentPrice,
+        predLow: finalPrediction.predLow,
+        predHigh: finalPrediction.predHigh,
+        confidence: finalPrediction.confidence,
+        mode: req.body.mode || 'ai-astro-combined',
+        riskLevel: req.body.riskLevel || 'medium',
+        targetDate: whenDate
+      });
+
       return res.json(finalPrediction);
+
     } catch (error) {
       console.error('Prediction error:', error);
-      const { stock = 'TCS', when } = req.body;
-      res.json(predictPrice(stock, when ? new Date(when) : new Date()));
+      // ── No more fake-price fallback here ──
+      return res.status(500).json({
+        message: "An error occurred while generating the prediction. Please try again.",
+        error: "PREDICTION_ERROR"
+      });
     }
   });
 
@@ -638,7 +661,7 @@ export function registerRoutes(app: Express): Server {
       res.status(500).json({ message: 'Error fetching learning history' });
     }
   });
-// ── GET user feedback ────────────────────────────────────────────
+
   app.get('/api/user/feedback', isAuthenticated, async (req: any, res) => {
     try {
       res.json(await storage.getUserFeedback(req.user.id));
@@ -647,7 +670,6 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // ── Update profile ───────────────────────────────────────────────
   app.put('/api/user/profile', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.id;
@@ -664,7 +686,6 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // ── Change password ──────────────────────────────────────────────
   app.put('/api/user/password', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.id;
@@ -688,7 +709,6 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // ── Export user data ─────────────────────────────────────────────
   app.get('/api/user/export', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.id;
@@ -706,7 +726,6 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // ── Delete account ───────────────────────────────────────────────
   app.delete('/api/user/account', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.id;
@@ -717,12 +736,13 @@ export function registerRoutes(app: Express): Server {
       res.status(500).json({ message: "Failed to delete account" });
     }
   });
+
   app.post('/api/notifications/subscribe', isAuthenticated, async (req: any, res) => {
     res.json({ status: 'success', message: 'Subscription stored' });
   });
 
   app.post('/api/notifications/unsubscribe', isAuthenticated, async (req: any, res) => {
-    res.json({ status: 'success', message: 'Unsubscribed' });
+    res.json({ status: 'success', message: 'Subscription stored' });
   });
 
   app.post('/api/notifications/test', isAuthenticated, async (req: any, res) => {
