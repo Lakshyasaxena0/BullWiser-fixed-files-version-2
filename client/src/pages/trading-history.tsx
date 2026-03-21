@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ChevronLeft, TrendingUp, TrendingDown, Bitcoin, BarChart2 } from "lucide-react";
+import { ChevronLeft, Bitcoin, BarChart2 } from "lucide-react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -39,23 +39,33 @@ export default function TradingHistoryPage() {
   const getConfidenceColor = (c: number) =>
     c >= 70 ? "text-green-600" : c >= 50 ? "text-amber-600" : "text-red-600";
 
-  const renderTable = (trades: any[], isCrypto = false) => {
+  const renderTable = (trades: any[], type: "stock" | "crypto" | "all" = "stock") => {
+    const isCrypto = type === "crypto";
+    const emptyLabel = type === "all" ? "predictions" : isCrypto ? "crypto predictions" : "stock predictions";
+    const emptyAction = type === "all"
+      ? { label: "Go to Dashboard", path: "/" }
+      : isCrypto
+        ? { label: "Go to Crypto", path: "/cryptocurrencies" }
+        : { label: "Go to Dashboard", path: "/" };
+
     if (trades.length === 0) {
       return (
         <div className="flex flex-col items-center justify-center py-16 text-gray-400 space-y-3">
           <BarChart2 className="h-12 w-12 text-gray-300" />
-          <p className="text-sm font-medium">No {isCrypto ? "crypto" : "stock"} predictions yet</p>
-          <Button size="sm" variant="outline" onClick={() => setLocation(isCrypto ? '/cryptocurrencies' : '/')}>
-            {isCrypto ? "Go to Crypto" : "Go to Dashboard"}
+          <p className="text-sm font-medium">No {emptyLabel} yet</p>
+          <Button size="sm" variant="outline" onClick={() => setLocation(emptyAction.path)}>
+            {emptyAction.label}
           </Button>
         </div>
       );
     }
+
     return (
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Symbol</TableHead>
+            {type === "all" && <TableHead>Type</TableHead>}
             <TableHead>Entry Price</TableHead>
             <TableHead>Target Low</TableHead>
             <TableHead>Target High</TableHead>
@@ -66,17 +76,27 @@ export default function TradingHistoryPage() {
         </TableHeader>
         <TableBody>
           {trades.map((p: any) => {
-            const symbol = isCrypto ? p.stock.replace('CRYPTO_', '') : p.stock;
+            const isCryptoRow = p.stock?.startsWith('CRYPTO_');
+            const symbol = isCryptoRow ? p.stock.replace('CRYPTO_', '') : p.stock;
             return (
               <TableRow key={p.id}>
                 <TableCell className="font-medium">
                   <div className="flex items-center space-x-2">
-                    {isCrypto
+                    {isCryptoRow
                       ? <Bitcoin className="h-4 w-4 text-orange-500" />
                       : <div className="w-4 h-4 bg-blue-500 rounded-full" />}
                     <span>{symbol}</span>
                   </div>
                 </TableCell>
+                {type === "all" && (
+                  <TableCell>
+                    <Badge className={isCryptoRow
+                      ? "bg-orange-100 text-orange-700"
+                      : "bg-blue-100 text-blue-700"}>
+                      {isCryptoRow ? "Crypto" : "Stock"}
+                    </Badge>
+                  </TableCell>
+                )}
                 <TableCell>₹{p.currentPrice?.toFixed(2) ?? '—'}</TableCell>
                 <TableCell className="text-red-600">₹{p.predLow?.toFixed(2) ?? '—'}</TableCell>
                 <TableCell className="text-green-600">₹{p.predHigh?.toFixed(2) ?? '—'}</TableCell>
@@ -105,27 +125,44 @@ export default function TradingHistoryPage() {
         </div>
       </div>
 
-      {/* Real stats */}
+      {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card><CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Total Predictions</CardTitle></CardHeader>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Total Predictions</CardTitle></CardHeader>
           <CardContent><div className="text-2xl font-bold text-gray-900">{totalTrades}</div><p className="text-sm text-gray-500">All time</p></CardContent>
         </Card>
-        <Card><CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Active</CardTitle></CardHeader>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Active</CardTitle></CardHeader>
           <CardContent><div className="text-2xl font-bold text-blue-600">{activeTrades}</div><p className="text-sm text-gray-500">Currently active</p></CardContent>
         </Card>
-        <Card><CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Avg Confidence</CardTitle></CardHeader>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Avg Confidence</CardTitle></CardHeader>
           <CardContent><div className="text-2xl font-bold text-green-600">{avgConfidence}%</div><p className="text-sm text-gray-500">Across all predictions</p></CardContent>
         </Card>
-        <Card><CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Bullish Rate</CardTitle></CardHeader>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-600">Bullish Rate</CardTitle></CardHeader>
           <CardContent><div className="text-2xl font-bold text-purple-600">{winRate}%</div><p className="text-sm text-gray-500">Upward predictions</p></CardContent>
         </Card>
       </div>
 
-      <Tabs defaultValue="stocks">
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="stocks">Stock Predictions ({stockTrades.length})</TabsTrigger>
-          <TabsTrigger value="crypto">Crypto Predictions ({cryptoTrades.length})</TabsTrigger>
+      {/* Merged Tabs: All / Stocks / Crypto */}
+      <Tabs defaultValue="all">
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="all">All ({allTrades.length})</TabsTrigger>
+          <TabsTrigger value="stocks">Stocks ({stockTrades.length})</TabsTrigger>
+          <TabsTrigger value="crypto">Crypto ({cryptoTrades.length})</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="all">
+          <Card>
+            <CardHeader><CardTitle>All Predictions</CardTitle></CardHeader>
+            <CardContent>
+              {isLoading
+                ? <div className="flex justify-center py-8"><div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" /></div>
+                : renderTable(allTrades, "all")}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="stocks">
           <Card>
@@ -133,7 +170,7 @@ export default function TradingHistoryPage() {
             <CardContent>
               {isLoading
                 ? <div className="flex justify-center py-8"><div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" /></div>
-                : renderTable(stockTrades, false)}
+                : renderTable(stockTrades, "stock")}
             </CardContent>
           </Card>
         </TabsContent>
@@ -144,7 +181,7 @@ export default function TradingHistoryPage() {
             <CardContent>
               {isLoading
                 ? <div className="flex justify-center py-8"><div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" /></div>
-                : renderTable(cryptoTrades, true)}
+                : renderTable(cryptoTrades, "crypto")}
             </CardContent>
           </Card>
         </TabsContent>
