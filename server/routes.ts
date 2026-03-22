@@ -15,13 +15,6 @@ import { db } from "./db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
-// ── REMOVED: predictPrice() mock function ──────────────────────────────────
-// This was the root cause of fake prices. The function generated prices purely
-// from character codes in the stock symbol name, producing values like ₹56.60
-// for MARUTI regardless of the real market price. It has been removed entirely.
-// The /api/predict route now returns a proper error when live data is unavailable.
-// ──────────────────────────────────────────────────────────────────────────────
-
 function calculateBullwiserPrice(mode: string, tradeType: string, tradesPerDay: number, duration: string, referralCount: number = 0) {
   const tradeTypeRates = { 'low': 700, 'medium': 1400, 'high': 2100 };
   const ratePerTrade = tradeTypeRates[tradeType as keyof typeof tradeTypeRates] || 700;
@@ -117,12 +110,7 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // ── /api/predict — FIXED ────────────────────────────────────────────────────
-  // Changes:
-  //   1. Try NSE quote first, then BSE as fallback (same as /api/stock/:symbol)
-  //   2. If both fail → return 503 with a clear message (no more fake prices)
-  //   3. AI+Astro pipeline always runs on the REAL price
-  // ───────────────────────────────────────────────────────────────────────────
+  // ── /api/predict ─────────────────────────────────────────────────────────
   app.post('/api/predict', isAuthenticated, async (req: any, res) => {
     try {
       const { stock = 'TCS', when } = req.body;
@@ -144,33 +132,87 @@ export function registerRoutes(app: Express): Server {
       const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
       const upperSymbol = stock.toUpperCase();
 
-      // ── Step 1: Fetch real-time quote (NSE first, then BSE) ──────────────
+      // Step 1: Fetch real-time quote — NSE first, then BSE
       let realTimeQuote = await stockDataService.getStockQuote(upperSymbol, 'NSE');
       if (!realTimeQuote) {
-        console.log(`[Predict] NSE quote failed for ${upperSymbol}, trying BSE...`);
+        console.log(`[Predict] NSE failed for ${upperSymbol}, trying BSE...`);
         realTimeQuote = await stockDataService.getStockQuote(upperSymbol, 'BSE');
       }
 
-      // ── Step 2: If both exchanges fail → return error, no fake data ──────
+      // Step 2: No live quote → return clear error, no fake data
       if (!realTimeQuote) {
-        console.warn(`[Predict] No live quote found for ${upperSymbol} on NSE or BSE`);
         return res.status(503).json({
-          message: `Live market data for "${upperSymbol}" is currently unavailable. Please verify the symbol is correct (e.g. RELIANCE, TCS, HDFCBANK) and try again in a moment.`,
+          message: `Live market data for "${upperSymbol}" is currently unavailable. Please verify the symbol is correct (e.g. RELIANCE, TCS, HDFCBANK) and try again.`,
           error: "QUOTE_UNAVAILABLE",
           symbol: upperSymbol,
-          suggestion: "Try checking the symbol in the Stock Rate Checker on the Dashboard first."
         });
       }
 
-      // ── Step 3: Run real AI + Astro prediction pipeline ──────────────────
       const currentPrice = realTimeQuote.adjustedPrice || realTimeQuote.lastPrice;
       const historicalData = await stockDataService.getHistoricalData(upperSymbol, 30);
-      const enhancedPrediction = await aiService.generateEnhancedPrediction(
-        upperSymbol,
-        currentPrice,
-        userId,
-        historicalData
-      );
+
+      // Step 3: Run AI + Astro prediction pipeline
+      let enhancedPrediction: any = null;
+      try {
+        enhancedPrediction = await aiService.generateEnhancedPrediction(
+          upperSymbol, currentPrice, userId, historicalData
+        );
+      } catch (pipelineError) {
+        console.error('[Predict] AI/Astro pipeline error:', pipelineError);
+      }
+
+      // ── FIX: if pipeline returned null/undefined (e.g. OpenAI not configured
+      //         and combineAIAndAstroPredictions returned null), fall back to
+      //         a pure astrology prediction built directly on the REAL price.
+      if (!enhancedPrediction || !enhancedPrediction.prediction) {
+        console.log(`[Predict] Enhanced pipeline returned null for ${upperSymbol}, using astro-only fallback on real price ₹${currentPrice}`);
+        try {
+          const astroPred = await astrologyService.generateAstroPrediction(upperSymbol, whenDate, currentPrice);
+          const riskMultiplier = req.body.riskLevel === 'high' ? 0.04 : req.body.riskLevel === 'low' ? 0.015 : 0.025;
+          enhancedPrediction = {
+            prediction: {
+              direction: astroPred.direction,
+              confidence: astroPred.confidence,
+              priceTarget: {
+                low:  Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100,
+                high: Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100,
+              },
+            },
+            combinedConfidence: astroPred.confidence,
+            finalDirection: astroPred.direction,
+            astroRecommendation: astroPred.recommendation,
+            warnings: astroPred.warnings,
+            analysis: {
+              technicalFactors: [],
+              marketSentiment: 'mixed',
+              keyRisks: astroPred.warnings,
+              recommendation: astroPred.recommendation,
+            },
+            reasoning: 'Vedic astrology analysis (AI model not configured)',
+            metadata: { aiEnabled: false, feedbackLearningApplied: false },
+          };
+        } catch (astroError) {
+          // Last resort — use real price with conservative ±2% band
+          console.error('[Predict] Astro fallback also failed:', astroError);
+          enhancedPrediction = {
+            prediction: {
+              direction: 'neutral',
+              confidence: 50,
+              priceTarget: {
+                low:  Math.round(currentPrice * 0.98 * 100) / 100,
+                high: Math.round(currentPrice * 1.02 * 100) / 100,
+              },
+            },
+            combinedConfidence: 50,
+            finalDirection: 'neutral',
+            astroRecommendation: 'Hold and observe',
+            warnings: [],
+            analysis: { technicalFactors: [], marketSentiment: 'mixed', keyRisks: [], recommendation: 'Hold and observe' },
+            reasoning: 'Conservative estimate based on real market price',
+            metadata: { aiEnabled: false, feedbackLearningApplied: false },
+          };
+        }
+      }
 
       const isDevMode = process.env.NODE_ENV === 'development';
       const showAstroDetails = isDevMode && req.user?.role === 'developer';
@@ -179,46 +221,45 @@ export function registerRoutes(app: Express): Server {
         stock: upperSymbol,
         when: whenDate.toISOString(),
         currentPrice,
-        predLow: enhancedPrediction.prediction?.priceTarget?.low || currentPrice * 0.98,
-        predHigh: enhancedPrediction.prediction?.priceTarget?.high || currentPrice * 1.02,
-        confidence: enhancedPrediction.combinedConfidence || enhancedPrediction.confidence || 60,
-        exchange: realTimeQuote.exchange,
-        direction: enhancedPrediction.finalDirection || enhancedPrediction.prediction?.direction || 'neutral',
+        predLow:    enhancedPrediction.prediction?.priceTarget?.low  ?? Math.round(currentPrice * 0.98 * 100) / 100,
+        predHigh:   enhancedPrediction.prediction?.priceTarget?.high ?? Math.round(currentPrice * 1.02 * 100) / 100,
+        confidence: enhancedPrediction.combinedConfidence || enhancedPrediction.prediction?.confidence || 50,
+        exchange:   realTimeQuote.exchange,
+        direction:  enhancedPrediction.finalDirection || enhancedPrediction.prediction?.direction || 'neutral',
         technicalFactors: enhancedPrediction.analysis?.technicalFactors || [],
-        marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed',
-        keyRisks: enhancedPrediction.warnings || enhancedPrediction.analysis?.keyRisks || [],
-        recommendation: enhancedPrediction.astroRecommendation || enhancedPrediction.analysis?.recommendation || 'Hold and observe',
-        reasoning: enhancedPrediction.reasoning || 'Advanced AI + Astrology analysis',
-        aiPowered: enhancedPrediction.metadata?.aiEnabled || false,
+        marketSentiment:  enhancedPrediction.analysis?.marketSentiment  || 'mixed',
+        keyRisks:         enhancedPrediction.warnings || enhancedPrediction.analysis?.keyRisks || [],
+        recommendation:   enhancedPrediction.astroRecommendation || enhancedPrediction.analysis?.recommendation || 'Hold and observe',
+        reasoning:        enhancedPrediction.reasoning || 'Astrology-based analysis',
+        aiPowered:        enhancedPrediction.metadata?.aiEnabled || false,
         feedbackEnhanced: enhancedPrediction.metadata?.feedbackLearningApplied || false,
-        companyName: realTimeQuote.companyName,
+        companyName:      realTimeQuote.companyName,
         ...(showAstroDetails && {
           astrologyBias: realTimeQuote.astrologyBias || 0,
           horaInfluence: realTimeQuote.horaInfluence,
-          astroFactors: enhancedPrediction.astroFactors,
+          astroFactors:  enhancedPrediction.astroFactors,
           astroStrength: enhancedPrediction.astroStrength,
-          astroPowered: true
-        })
+          astroPowered:  true,
+        }),
       };
 
-      // ── Step 4: Save to DB ────────────────────────────────────────────────
+      // Save to DB
       await storage.createPrediction({
         userId,
-        stock: finalPrediction.stock,
+        stock:        finalPrediction.stock,
         currentPrice: finalPrediction.currentPrice,
-        predLow: finalPrediction.predLow,
-        predHigh: finalPrediction.predHigh,
-        confidence: finalPrediction.confidence,
-        mode: req.body.mode || 'ai-astro-combined',
-        riskLevel: req.body.riskLevel || 'medium',
-        targetDate: whenDate
+        predLow:      finalPrediction.predLow,
+        predHigh:     finalPrediction.predHigh,
+        confidence:   finalPrediction.confidence,
+        mode:         req.body.mode || 'ai-astro-combined',
+        riskLevel:    req.body.riskLevel || 'medium',
+        targetDate:   whenDate,
       });
 
       return res.json(finalPrediction);
 
     } catch (error) {
       console.error('Prediction error:', error);
-      // ── No more fake-price fallback here ──
       return res.status(500).json({
         message: "An error occurred while generating the prediction. Please try again.",
         error: "PREDICTION_ERROR"
@@ -740,11 +781,9 @@ export function registerRoutes(app: Express): Server {
   app.post('/api/notifications/subscribe', isAuthenticated, async (req: any, res) => {
     res.json({ status: 'success', message: 'Subscription stored' });
   });
-
   app.post('/api/notifications/unsubscribe', isAuthenticated, async (req: any, res) => {
-    res.json({ status: 'success', message: 'Subscription stored' });
+    res.json({ status: 'success', message: 'Unsubscribed' });
   });
-
   app.post('/api/notifications/test', isAuthenticated, async (req: any, res) => {
     res.json({ status: 'success', message: 'Test notification sent' });
   });
