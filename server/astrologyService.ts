@@ -1,6 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // astrologyService.ts  —  Real-time Vedic astrology via Prokerala API
-// Prokerala docs: https://api.prokerala.com/docs
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface PlanetaryPosition {
@@ -104,9 +103,7 @@ async function prokeralaGet(endpoint: string, params: Record<string, string>): P
   }
 }
 
-// ─── Format date for Prokerala ───────────────────────────────────────────────
 function prokeralaDateTime(date: Date): string {
-  // Format: 2024-03-20T10:30:00+05:30
   const pad = (n: number) => n.toString().padStart(2, '0');
   return (
     `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
@@ -115,7 +112,6 @@ function prokeralaDateTime(date: Date): string {
 }
 
 export class AstrologyService {
-  // Default location: Mumbai
   private readonly DEFAULT_LAT = 19.0760;
   private readonly DEFAULT_LNG = 72.8777;
 
@@ -148,44 +144,29 @@ export class AstrologyService {
     'Sun','Venus','Mercury',
   ];
 
-  // ── Prokerala panchang ──────────────────────────────────────────────────────
-  private async fetchProkeralaPanchang(
-    date: Date,
-    lat: number,
-    lng: number
-  ): Promise<Partial<AstrologyData> | null> {
-    const datetime = prokeralaDateTime(date);
-    const params = {
-      datetime,
+  // ── Panchang ─────────────────────────────────────────────────────────────
+  private async fetchProkeralaPanchang(date: Date, lat: number, lng: number): Promise<Partial<AstrologyData> | null> {
+    const data = await prokeralaGet('panchang', {
+      datetime: prokeralaDateTime(date),
       coordinates: `${lat},${lng}`,
-      ayanamsa: '1', // Lahiri ayanamsa (standard for Vedic)
-    };
-
-    const data = await prokeralaGet('panchang', params);
+      ayanamsa: '1',
+    });
     if (!data) return null;
-
     try {
       return {
-        tithi: data.tithi?.details?.[0]?.name || data.tithi?.name || this.calcTithi(date),
+        tithi:    data.tithi?.details?.[0]?.name    || data.tithi?.name    || this.calcTithi(date),
         nakshatra: data.nakshatra?.details?.[0]?.name || data.nakshatra?.name || this.calcNakshatra(date),
-        yoga: data.yoga?.details?.[0]?.name || data.yoga?.name || 'Siddha',
-        karana: data.karana?.details?.[0]?.name || data.karana?.name || 'Bava',
+        yoga:     data.yoga?.details?.[0]?.name     || data.yoga?.name     || 'Siddha',
+        karana:   data.karana?.details?.[0]?.name   || data.karana?.name   || 'Bava',
         source: 'prokerala',
       };
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }
 
-  // ── Prokerala planet positions ──────────────────────────────────────────────
-  private async fetchProkeralaPlanets(
-    date: Date,
-    lat: number,
-    lng: number
-  ): Promise<PlanetaryPosition[] | null> {
-    const datetime = prokeralaDateTime(date);
+  // ── Planet positions ──────────────────────────────────────────────────────
+  private async fetchProkeralaPlanets(date: Date, lat: number, lng: number): Promise<PlanetaryPosition[] | null> {
     const data = await prokeralaGet('planet-position', {
-      datetime,
+      datetime: prokeralaDateTime(date),
       coordinates: `${lat},${lng}`,
       ayanamsa: '1',
     });
@@ -195,7 +176,6 @@ export class AstrologyService {
       'Aries','Taurus','Gemini','Cancer','Leo','Virgo',
       'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces',
     ];
-
     try {
       return data.planet_position.map((p: any) => ({
         planet: p.name,
@@ -203,77 +183,73 @@ export class AstrologyService {
         degree: parseFloat(p.degree) || 0,
         retrograde: p.isRetrograde === true || p.is_retrograde === true,
       }));
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }
 
-  // ── Prokerala hora ─────────────────────────────────────────────────────────
-  private async fetchProkeralaHora(
-    date: Date,
-    lat: number,
-    lng: number
-  ): Promise<string | null> {
-    const datetime = prokeralaDateTime(date);
+  // ── FIX: Hora — added missing ayanamsa param (was causing 400) ────────────
+  private async fetchProkeralaHora(date: Date, lat: number, lng: number): Promise<string | null> {
     const data = await prokeralaGet('hora', {
-      datetime,
+      datetime:    prokeralaDateTime(date),
       coordinates: `${lat},${lng}`,
+      ayanamsa:    '1',   // ← was missing, caused 400 Bad Request
     });
     if (!data) return null;
 
     try {
-      // Find current hora
-      const now = date.getTime();
-      const horas: any[] = data.hora || [];
+      const now   = date.getTime();
+      const horas: any[] = data.hora || data.horas || [];
       const current = horas.find((h: any) => {
-        const start = new Date(h.start).getTime();
-        const end = new Date(h.end).getTime();
+        const start = new Date(h.start || h.startTime).getTime();
+        const end   = new Date(h.end   || h.endTime).getTime();
         return now >= start && now <= end;
       });
-      return current?.planet || null;
-    } catch {
-      return null;
-    }
+      return current?.planet || current?.lord || null;
+    } catch { return null; }
   }
 
-  // ── Prokerala kalam timings ─────────────────────────────────────────────────
-  private async fetchProkeralaKalam(
-    date: Date,
-    lat: number,
-    lng: number
-  ): Promise<Partial<AstrologyData> | null> {
-    const datetime = prokeralaDateTime(date);
-    const data = await prokeralaGet('kalam', {
-      datetime,
+  // ── FIX: Kalam — corrected endpoint from 'kalam' to 'inauspicious-period' (404 fix) ──
+  private async fetchProkeralaKalam(date: Date, lat: number, lng: number): Promise<Partial<AstrologyData> | null> {
+    const data = await prokeralaGet('inauspicious-period', {
+      datetime:    prokeralaDateTime(date),
       coordinates: `${lat},${lng}`,
+      ayanamsa:    '1',
     });
     if (!data) return null;
 
     try {
-      const fmt = (d: string) => new Date(d).toTimeString().substring(0, 5);
-      return {
-        rahuKalamStart:    fmt(data.rahu_kalam?.start || ''),
-        rahuKalamEnd:      fmt(data.rahu_kalam?.end || ''),
-        gulikaKalamStart:  fmt(data.gulika_kalam?.start || ''),
-        gulikaKalamEnd:    fmt(data.gulika_kalam?.end || ''),
-        yamghantaKalamStart: fmt(data.yamaganda_kalam?.start || ''),
-        yamghantaKalamEnd:   fmt(data.yamaganda_kalam?.end || ''),
+      const fmt = (iso: string) => {
+        if (!iso) return '';
+        try { return new Date(iso).toTimeString().substring(0, 5); } catch { return ''; }
       };
-    } catch {
-      return null;
-    }
+
+      // Prokerala returns inauspicious periods as an array
+      const periods: any[] = data.inauspicious_period || data.inauspiciousPeriod || [];
+
+      const find = (name: string) => periods.find((p: any) =>
+        (p.name || p.type || '').toLowerCase().includes(name.toLowerCase())
+      );
+
+      const rahu    = find('rahu');
+      const gulika  = find('gulika') || find('gulika kalam');
+      const yam     = find('yamaganda') || find('yamghanta');
+
+      return {
+        rahuKalamStart:      fmt(rahu?.start   || rahu?.startTime   || ''),
+        rahuKalamEnd:        fmt(rahu?.end     || rahu?.endTime     || ''),
+        gulikaKalamStart:    fmt(gulika?.start || gulika?.startTime || ''),
+        gulikaKalamEnd:      fmt(gulika?.end   || gulika?.endTime   || ''),
+        yamghantaKalamStart: fmt(yam?.start    || yam?.startTime    || ''),
+        yamghantaKalamEnd:   fmt(yam?.end      || yam?.endTime      || ''),
+      };
+    } catch { return null; }
   }
 
-  // ── Main method: get real-time astrology data ───────────────────────────────
-  async getCurrentAstrology(
-    date?: Date,
-    location?: { lat: number; lng: number }
-  ): Promise<AstrologyData> {
-    const d = date || new Date();
+  // ── Main: get real-time astrology data ────────────────────────────────────
+  async getCurrentAstrology(date?: Date, location?: { lat: number; lng: number }): Promise<AstrologyData> {
+    const d   = date || new Date();
     const lat = location?.lat || this.DEFAULT_LAT;
     const lng = location?.lng || this.DEFAULT_LNG;
 
-    // Start all Prokerala calls in parallel
     const [panchang, planets, hora, kalam] = await Promise.all([
       this.fetchProkeralaPanchang(d, lat, lng),
       this.fetchProkeralaPlanets(d, lat, lng),
@@ -283,14 +259,14 @@ export class AstrologyService {
 
     const isReal = !!(panchang || planets || hora || kalam);
     if (isReal) console.log('[Astro] Using real Prokerala data ✅');
-    else console.log('[Astro] Prokerala unavailable, using calculated fallback');
+    else        console.log('[Astro] Prokerala unavailable, using calculated fallback');
 
     return {
       hora:              hora || this.calcHora(d),
-      tithi:             panchang?.tithi || this.calcTithi(d),
+      tithi:             panchang?.tithi    || this.calcTithi(d),
       nakshatra:         panchang?.nakshatra || this.calcNakshatra(d),
-      yoga:              panchang?.yoga || this.calcYoga(d),
-      karana:            panchang?.karana || this.calcKarana(d),
+      yoga:              panchang?.yoga     || this.calcYoga(d),
+      karana:            panchang?.karana   || this.calcKarana(d),
       lunarPhase:        this.calcLunarPhase(d),
       lunarIllumination: this.calcLunarIllumination(d),
       planetaryPositions: planets || this.calcPlanetPositions(d),
@@ -305,12 +281,11 @@ export class AstrologyService {
     };
   }
 
-  // Keep getDrikpanchangData for backward compat
   async getDrikpanchangData(date: Date, location?: { lat: number; lng: number }): Promise<AstrologyData | null> {
     return this.getCurrentAstrology(date, location);
   }
 
-  // ── Prediction engine (unchanged logic, now fed real data) ─────────────────
+  // ── Prediction engine ─────────────────────────────────────────────────────
   async generateAstroPrediction(symbol: string, date: Date, currentPrice: number): Promise<AstrologyPrediction> {
     const astroData = await this.getCurrentAstrology(date);
     const horaScore      = this.calcHoraScore(astroData.hora, symbol);
@@ -327,27 +302,67 @@ export class AstrologyService {
     const direction: 'bullish' | 'bearish' | 'neutral' =
       total > 65 ? 'bullish' : total < 35 ? 'bearish' : 'neutral';
     const confidence = Math.min(95, Math.max(40, Math.abs(total - 50) * 2 + this.astroBonus(astroData)));
-    const warnings = this.buildWarnings(astroData, date);
+    const warnings      = this.buildWarnings(astroData, date);
     const recommendation = this.buildRecommendation(direction, total, astroData, warnings);
 
-    return { direction, strength: total, confidence, factors: { hora: horaScore, tithi: tithiScore, nakshatra: nakshatraScore, planetary: planetaryScore, muhurat: muhuratScore, rahuKetu: rahuKetuScore }, recommendation, warnings };
+    return {
+      direction, strength: total, confidence,
+      factors: { hora: horaScore, tithi: tithiScore, nakshatra: nakshatraScore, planetary: planetaryScore, muhurat: muhuratScore, rahuKetu: rahuKetuScore },
+      recommendation, warnings,
+    };
   }
 
   combineAIAndAstroPredictions(aiPrediction: any, astroPrediction: AstrologyPrediction, feedbackAdjustment = 0): any {
-    if (aiPrediction && astroPrediction) {
-      const aiDir = aiPrediction.prediction?.direction || 'neutral';
-      const astroDir = astroPrediction.direction;
-      const opposite = (aiDir === 'bullish' && astroDir === 'bearish') || (aiDir === 'bearish' && astroDir === 'bullish');
-      if (opposite) {
-        return { ...aiPrediction, prediction: { ...aiPrediction.prediction, direction: astroDir, confidence: astroPrediction.confidence }, astroOverride: true, astroFactors: astroPrediction.factors, combinedConfidence: astroPrediction.confidence, recommendation: `Astrology overrides technical analysis. ${astroPrediction.recommendation}`, warnings: astroPrediction.warnings };
-      }
-      const combined = Math.round(aiPrediction.prediction.confidence * 0.4 + astroPrediction.confidence * 0.6 + feedbackAdjustment);
-      return { ...aiPrediction, astroFactors: astroPrediction.factors, astroDirection: astroDir, astroStrength: astroPrediction.strength, combinedConfidence: Math.min(95, Math.max(30, combined)), astroRecommendation: astroPrediction.recommendation, warnings: astroPrediction.warnings, finalDirection: aiDir === astroDir ? aiDir : astroDir };
+    // ── FIX: always return a valid object even when aiPrediction is null ──
+    if (!aiPrediction) {
+      return {
+        prediction: {
+          direction:   astroPrediction.direction,
+          confidence:  astroPrediction.confidence,
+          priceTarget: { low: 0, high: 0 }, // routes.ts will override via fallback
+        },
+        combinedConfidence: astroPrediction.confidence,
+        finalDirection:     astroPrediction.direction,
+        astroRecommendation: astroPrediction.recommendation,
+        warnings:           astroPrediction.warnings,
+        astroFactors:       astroPrediction.factors,
+        metadata: { aiEnabled: false, feedbackLearningApplied: false },
+      };
     }
-    return aiPrediction;
+
+    const aiDir   = aiPrediction.prediction?.direction || 'neutral';
+    const astroDir = astroPrediction.direction;
+    const opposite = (aiDir === 'bullish' && astroDir === 'bearish') || (aiDir === 'bearish' && astroDir === 'bullish');
+
+    if (opposite) {
+      return {
+        ...aiPrediction,
+        prediction: { ...aiPrediction.prediction, direction: astroDir, confidence: astroPrediction.confidence },
+        astroOverride: true, astroFactors: astroPrediction.factors,
+        combinedConfidence: astroPrediction.confidence,
+        recommendation: `${astroPrediction.recommendation}`,
+        warnings: astroPrediction.warnings,
+      };
+    }
+
+    const combined = Math.round(
+      (aiPrediction.prediction?.confidence || 60) * 0.4 +
+      astroPrediction.confidence * 0.6 +
+      feedbackAdjustment
+    );
+    return {
+      ...aiPrediction,
+      astroFactors:       astroPrediction.factors,
+      astroDirection:     astroDir,
+      astroStrength:      astroPrediction.strength,
+      combinedConfidence: Math.min(95, Math.max(30, combined)),
+      astroRecommendation: astroPrediction.recommendation,
+      warnings:           astroPrediction.warnings,
+      finalDirection:     aiDir === astroDir ? aiDir : astroDir,
+    };
   }
 
-  // ── Fallback calculators ────────────────────────────────────────────────────
+  // ── Fallback calculators ──────────────────────────────────────────────────
   private calcHora(d: Date): string { return this.horaRulers[d.getHours()]; }
   private calcTithi(d: Date): string {
     const t = ['Pratipada','Dwitiya','Tritiya','Chaturthi','Panchami','Shashthi','Saptami','Ashtami','Navami','Dashami','Ekadashi','Dwadashi','Trayodashi','Chaturdashi','Purnima'];
@@ -380,13 +395,18 @@ export class AstrologyService {
     const signs = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo','Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
     const T = (this.julianDay(d) - 2451545.0) / 36525.0;
     const base: Record<string, [number, number, number]> = {
-      Sun: [280.460, 36000.770, 0], Moon: [218.316, 481267.881, 0],
-      Mercury: [252.250, 149472.515, 6.28], Venus: [181.979, 58517.816, 4.0],
-      Mars: [355.433, 19140.303, 2.5], Jupiter: [34.351, 3034.906, 1.2],
-      Saturn: [50.078, 1222.114, 0.8], Rahu: [125.045, -1934.136, 0], Ketu: [305.045, 1934.136, 0],
+      Sun:     [280.460, 36000.770, 0],
+      Moon:    [218.316, 481267.881, 0],
+      Mercury: [252.250, 149472.515, 6.28],
+      Venus:   [181.979, 58517.816, 4.0],
+      Mars:    [355.433, 19140.303, 2.5],
+      Jupiter: [34.351,  3034.906, 1.2],
+      Saturn:  [50.078,  1222.114, 0.8],
+      Rahu:    [125.045, -1934.136, 0],
+      Ketu:    [305.045, 1934.136, 0],
     };
     return Object.entries(base).map(([planet, [L0, L1, retro]]) => {
-      let lon = ((L0 + L1 * T) % 360 + 360) % 360;
+      const lon = ((L0 + L1 * T) % 360 + 360) % 360;
       return { planet, sign: signs[Math.floor(lon / 30)], degree: lon % 30, retrograde: retro > 0 && Math.sin(T * retro) < -0.7 };
     });
   }
@@ -396,13 +416,17 @@ export class AstrologyService {
     return day + Math.floor((153 * mo + 2) / 5) + 365 * yr + Math.floor(yr / 4) - Math.floor(yr / 100) + Math.floor(yr / 400) - 32045 + (h - 12) / 24;
   }
   private calcMuhuratWindows(_d: Date): MuhuratWindow[] {
-    return [{ start: '11:36', end: '12:24', quality: 'excellent' }, { start: '06:00', end: '07:30', quality: 'good' }, { start: '04:30', end: '06:00', quality: 'excellent' }];
+    return [
+      { start: '11:36', end: '12:24', quality: 'excellent' },
+      { start: '06:00', end: '07:30', quality: 'good' },
+      { start: '04:30', end: '06:00', quality: 'excellent' },
+    ];
   }
-  private calcRahuKalam(d: Date) { return [{ start: '16:30', end: '18:00' }, { start: '07:30', end: '09:00' }, { start: '15:00', end: '16:30' }, { start: '12:00', end: '13:30' }, { start: '13:30', end: '15:00' }, { start: '10:30', end: '12:00' }, { start: '09:00', end: '10:30' }][d.getDay()]; }
-  private calcGulikaKalam(d: Date) { return [{ start: '15:00', end: '16:30' }, { start: '13:30', end: '15:00' }, { start: '12:00', end: '13:30' }, { start: '10:30', end: '12:00' }, { start: '09:00', end: '10:30' }, { start: '07:30', end: '09:00' }, { start: '06:00', end: '07:30' }][d.getDay()]; }
+  private calcRahuKalam(d: Date)    { return [{ start: '16:30', end: '18:00' }, { start: '07:30', end: '09:00' }, { start: '15:00', end: '16:30' }, { start: '12:00', end: '13:30' }, { start: '13:30', end: '15:00' }, { start: '10:30', end: '12:00' }, { start: '09:00', end: '10:30' }][d.getDay()]; }
+  private calcGulikaKalam(d: Date)  { return [{ start: '15:00', end: '16:30' }, { start: '13:30', end: '15:00' }, { start: '12:00', end: '13:30' }, { start: '10:30', end: '12:00' }, { start: '09:00', end: '10:30' }, { start: '07:30', end: '09:00' }, { start: '06:00', end: '07:30' }][d.getDay()]; }
   private calcYamghantaKalam(d: Date) { return [{ start: '12:00', end: '13:30' }, { start: '10:30', end: '12:00' }, { start: '09:00', end: '10:30' }, { start: '07:30', end: '09:00' }, { start: '06:00', end: '07:30' }, { start: '15:00', end: '16:30' }, { start: '13:30', end: '15:00' }][d.getDay()]; }
 
-  // ── Scoring ─────────────────────────────────────────────────────────────────
+  // ── Scoring ───────────────────────────────────────────────────────────────
   private calcHoraScore(hora: string, symbol: string): number {
     const s = this.planetaryStrengths[hora];
     if (!s) return 50;
@@ -421,7 +445,7 @@ export class AstrologyService {
       const s = this.planetaryStrengths[p.planet];
       if (!s) return 50;
       let sc = s.bullish * 100;
-      if (p.retrograde) sc = 100 - sc;
+      if (p.retrograde)           sc = 100 - sc;
       if (exalt[p.planet] === p.sign) sc *= 1.2;
       if (debil[p.planet] === p.sign) sc *= 0.8;
       return sc;
@@ -431,18 +455,20 @@ export class AstrologyService {
   private calcMuhuratScore(windows: MuhuratWindow[], d: Date): number {
     const t = d.toTimeString().substring(0, 5);
     for (const w of windows) {
-      if (this.inRange(t, w.start, w.end)) return w.quality === 'excellent' ? 90 : w.quality === 'good' ? 70 : w.quality === 'average' ? 50 : 30;
+      if (this.inRange(t, w.start, w.end))
+        return w.quality === 'excellent' ? 90 : w.quality === 'good' ? 70 : w.quality === 'average' ? 50 : 30;
     }
     return 50;
   }
   private calcRahuKetuScore(a: AstrologyData, d: Date): number {
     const t = d.toTimeString().substring(0, 5);
-    if (this.inRange(t, a.rahuKalamStart, a.rahuKalamEnd)) return 20;
-    if (this.inRange(t, a.gulikaKalamStart, a.gulikaKalamEnd)) return 25;
+    if (this.inRange(t, a.rahuKalamStart, a.rahuKalamEnd))       return 20;
+    if (this.inRange(t, a.gulikaKalamStart, a.gulikaKalamEnd))   return 25;
     if (this.inRange(t, a.yamghantaKalamStart, a.yamghantaKalamEnd)) return 30;
     return 50;
   }
   private inRange(cur: string, start: string, end: string): boolean {
+    if (!cur || !start || !end) return false;
     const [ch, cm] = cur.split(':').map(Number);
     const [sh, sm] = start.split(':').map(Number);
     const [eh, em] = end.split(':').map(Number);
@@ -452,32 +478,30 @@ export class AstrologyService {
   private astroBonus(a: AstrologyData): number {
     let b = 0;
     if (['Siddhi','Amrita','Shubha','Brahma','Indra'].includes(a.yoga)) b += 10;
-    if (a.lunarPhase === 'Full Moon' || a.lunarPhase === 'New Moon') b += 5;
+    if (a.lunarPhase === 'Full Moon' || a.lunarPhase === 'New Moon')    b += 5;
     return b;
   }
   private buildWarnings(a: AstrologyData, d: Date): string[] {
     const t = d.toTimeString().substring(0, 5);
     const w: string[] = [];
-    if (this.inRange(t, a.rahuKalamStart, a.rahuKalamEnd)) w.push('Rahu Kalam active — high volatility expected');
-    if (this.inRange(t, a.gulikaKalamStart, a.gulikaKalamEnd)) w.push('Gulika Kalam active — proceed with caution');
-    if (a.lunarPhase === 'New Moon') w.push('New Moon — market emotions may be suppressed');
-    if (a.lunarPhase === 'Full Moon') w.push('Full Moon — expect heightened market emotions');
+    if (this.inRange(t, a.rahuKalamStart, a.rahuKalamEnd))           w.push('High volatility window — Rahu Kalam active');
+    if (this.inRange(t, a.gulikaKalamStart, a.gulikaKalamEnd))       w.push('Proceed with caution — Gulika Kalam active');
+    if (a.lunarPhase === 'New Moon')   w.push('New Moon — market sentiment may be suppressed');
+    if (a.lunarPhase === 'Full Moon')  w.push('Full Moon — expect heightened market emotions');
     const retro = a.planetaryPositions.filter(p => p.retrograde);
     if (retro.length > 3) w.push(`${retro.length} planets retrograde — expect reversals`);
     return w;
   }
   private buildRecommendation(dir: string, score: number, a: AstrologyData, warnings: string[]): string {
     let r = dir === 'bullish'
-      ? score > 80 ? `Strong bullish — ${a.hora} hora + ${a.nakshatra} nakshatra. Consider long positions.`
-                  : `Moderate bullish — ${a.hora} hora favors gains. Scaled entry recommended.`
+      ? score > 80 ? 'Strong buy signal — planetary alignment favorable for upward movement'
+                  : 'Moderate buy — consider scaled entry with stop-loss'
       : dir === 'bearish'
-      ? score < 20 ? `Strong bearish — ${a.hora} hora caution. Avoid new positions.`
-                   : `Mild bearish — wait for better cosmic alignment.`
-      : `Mixed signals — market may consolidate. Monitor closely.`;
+      ? score < 20 ? 'Avoid new long positions — cosmic alignment unfavorable'
+                   : 'Mild bearish — wait for better entry point'
+      : 'Mixed signals — market may consolidate, monitor closely';
     const good = a.muhuratWindows.find(w => w.quality === 'excellent' || w.quality === 'good');
-    if (good) r += ` Auspicious window: ${good.start}–${good.end}.`;
-    if (warnings.length) r += ` ⚠ ${warnings[0]}`;
-    if (a.source === 'prokerala') r += ' [Real-time Prokerala data]';
+    if (good) r += `. Favorable trading window: ${good.start}–${good.end}`;
     return r;
   }
 }
