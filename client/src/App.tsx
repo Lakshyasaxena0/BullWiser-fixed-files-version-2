@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, Redirect } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -20,18 +20,15 @@ import Sidebar from "@/components/layout/sidebar";
 import Header from "@/components/layout/header";
 import ActivitiesPage from "@/pages/activities";
 import TradingHistoryPage from "@/pages/trading-history";
-import Cryptocurrencies from "./pages/cryptocurrencies";
 import CryptoPlans from "./pages/crypto-plans";
+
+// ── Cryptocurrencies page removed — merged into TradingHistoryPage ────────
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
   const [isMobile, setIsMobile] = useState(false);
-
-  // Safety timeout: if the auth check hasn't resolved in 5 seconds, stop
-  // showing the spinner and treat the user as unauthenticated. This prevents
-  // the infinite loading state when the backend server is unreachable
-  // (e.g. Replit sleeping, CORS blocked, or no backend on Netlify).
   const [authTimedOut, setAuthTimedOut] = useState(false);
+
   useEffect(() => {
     if (!isLoading) return;
     const timer = setTimeout(() => setAuthTimedOut(true), 5000);
@@ -39,15 +36,12 @@ function Router() {
   }, [isLoading]);
 
   useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768);
-    };
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
     checkMobile();
     window.addEventListener("resize", checkMobile);
     return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
-  // Show spinner only while loading AND within the 5-second timeout
   if (isLoading && !authTimedOut) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -105,7 +99,10 @@ function Router() {
             <Route path="/activities" component={ActivitiesPage} />
             <Route path="/activities/:id" component={ActivitiesPage} />
             <Route path="/trading-history" component={TradingHistoryPage} />
-            <Route path="/cryptocurrencies" component={Cryptocurrencies} />
+            {/* Redirect old /cryptocurrencies URL to merged Trading History page */}
+            <Route path="/cryptocurrencies">
+              <Redirect to="/trading-history" />
+            </Route>
             <Route path="/crypto-plans" component={CryptoPlans} />
             <Route component={NotFound} />
           </Switch>
