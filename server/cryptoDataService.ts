@@ -144,52 +144,40 @@ export class CryptoDataService {
     const cached = this.cache.get(key);
     return Boolean(cached && (Date.now() - cached.timestamp) < this.CACHE_TTL);
   }
-
-  private getCachedData(key: string): any {
-    return this.cache.get(key)?.data ?? null;
-  }
-
-  private setCacheData(key: string, data: any): void {
-    this.cache.set(key, { data, timestamp: Date.now() });
-  }
+  private getCachedData(key: string): any { return this.cache.get(key)?.data ?? null; }
+  private setCacheData(key: string, data: any): void { this.cache.set(key, { data, timestamp: Date.now() }); }
 
   async getCryptoQuote(symbol: string): Promise<CryptoQuote | null> {
     const cacheKey = `crypto_quote_${symbol}`;
     if (this.isCacheValid(cacheKey)) return this.getCachedData(cacheKey);
+
     const finnhubSymbol = FINNHUB_SYMBOL_MAP[symbol.toUpperCase()];
     if (!finnhubSymbol) return null;
+
     try {
-      const [quoteRes, candleRes] = await Promise.all([
-        axios.get(`${FINNHUB_BASE_URL}/quote`, {
-          params: { symbol: finnhubSymbol, token: FINNHUB_API_KEY },
-          timeout: 10000,
-        }),
-        axios.get(`${FINNHUB_BASE_URL}/crypto/candle`, {
-          params: {
-            symbol: finnhubSymbol,
-            resolution: 'D',
-            from: Math.floor(Date.now() / 1000) - 86400,
-            to: Math.floor(Date.now() / 1000),
-            token: FINNHUB_API_KEY,
-          },
-          timeout: 10000,
-        }),
-      ]);
+      // ── FIX: Only call /quote endpoint (free plan) — removed /crypto/candle
+      //         which requires a paid Finnhub subscription (was returning 403)
+      const quoteRes = await axios.get(`${FINNHUB_BASE_URL}/quote`, {
+        params: { symbol: finnhubSymbol, token: FINNHUB_API_KEY },
+        timeout: 10000,
+      });
+
       const q = quoteRes.data;
-      const c = candleRes.data;
       if (!q || q.c === 0) return null;
+
       const quote: CryptoQuote = {
-        symbol: symbol.toUpperCase(),
-        name: CRYPTO_NAMES[symbol.toUpperCase()] || symbol.toUpperCase(),
-        lastPrice: q.c,
-        change24h: q.d ?? 0,
+        symbol:          symbol.toUpperCase(),
+        name:            CRYPTO_NAMES[symbol.toUpperCase()] || symbol.toUpperCase(),
+        lastPrice:       q.c,
+        change24h:       q.d  ?? 0,
         changePercent24h: q.dp ?? 0,
-        volume24h: c?.v?.[0] ?? 0,
-        marketCap: 0,
-        high24h: c?.h?.[0] ?? q.h ?? q.c,
-        low24h:  c?.l?.[0] ?? q.l ?? q.c,
-        timestamp: new Date(),
+        volume24h:       0,          // not available on free plan
+        marketCap:       0,
+        high24h:         q.h  ?? q.c,
+        low24h:          q.l  ?? q.c,
+        timestamp:       new Date(),
       };
+
       const biasedQuote = applyCryptoAstrologyBias(quote);
       this.setCacheData(cacheKey, biasedQuote);
       return biasedQuote;
@@ -207,14 +195,13 @@ export class CryptoDataService {
       const quotes = (await Promise.all(topSymbols.map(s => this.getCryptoQuote(s)))).filter(Boolean) as CryptoQuote[];
       const sortedByChange = [...quotes].sort((a, b) => (b.changePercent24h || 0) - (a.changePercent24h || 0));
       const sortedByVolume = [...quotes].sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0));
-      const totalVolume = quotes.reduce((sum, q) => sum + (q.volume24h || 0), 0);
       const overview: CryptoOverview = {
-        totalMarketCap: 0,
-        totalVolume,
+        totalMarketCap:    0,
+        totalVolume:       quotes.reduce((sum, q) => sum + (q.volume24h || 0), 0),
         marketCapChange24h: quotes[0]?.changePercent24h ?? 0,
-        topGainers: sortedByChange.slice(0, 5),
-        topLosers: sortedByChange.slice(-5).reverse(),
-        mostActive: sortedByVolume.slice(0, 5),
+        topGainers:        sortedByChange.slice(0, 5),
+        topLosers:         sortedByChange.slice(-5).reverse(),
+        mostActive:        sortedByVolume.slice(0, 5),
       };
       this.setCacheData(cacheKey, overview);
       return overview;
@@ -224,37 +211,11 @@ export class CryptoDataService {
     }
   }
 
+  // ── Historical data: candle endpoint requires paid plan
+  //    Return empty array gracefully so predictions still work via astro fallback
   async getCryptoHistoricalData(symbol: string, days: number = 30): Promise<any[]> {
-    const cacheKey = `crypto_historical_${symbol}_${days}`;
-    if (this.isCacheValid(cacheKey)) return this.getCachedData(cacheKey);
-    const finnhubSymbol = FINNHUB_SYMBOL_MAP[symbol.toUpperCase()];
-    if (!finnhubSymbol) return [];
-    try {
-      const to   = Math.floor(Date.now() / 1000);
-      const from = to - days * 86400;
-      const response = await axios.get(`${FINNHUB_BASE_URL}/crypto/candle`, {
-        params: { symbol: finnhubSymbol, resolution: 'D', from, to, token: FINNHUB_API_KEY },
-        timeout: 15000,
-      });
-      const data = response.data;
-      if (!data || data.s === 'no_data' || !data.t) return [];
-      const { bias } = calculateCryptoAstrologyBias(symbol);
-      const biasMultiplier = 1 + (bias * 0.002);
-      const historicalData = data.t.map((timestamp: number, i: number) => ({
-        date:      new Date(timestamp * 1000),
-        open:      (data.o?.[i] ?? 0) * biasMultiplier,
-        high:      (data.h?.[i] ?? 0) * biasMultiplier,
-        low:       (data.l?.[i] ?? 0) * biasMultiplier,
-        close:     (data.c?.[i] ?? 0) * biasMultiplier,
-        volume:    data.v?.[i] ?? 0,
-        marketCap: 0,
-      }));
-      this.setCacheData(cacheKey, historicalData);
-      return historicalData;
-    } catch (error) {
-      console.error(`Error fetching Finnhub historical data for ${symbol}:`, error);
-      return [];
-    }
+    console.log(`[Crypto] Historical data skipped for ${symbol} — Finnhub candle requires paid plan`);
+    return [];
   }
 
   async searchCryptos(query: string): Promise<CryptoQuote[]> {
@@ -273,10 +234,16 @@ export class CryptoDataService {
           return a.symbol.localeCompare(b.symbol);
         })
         .slice(0, 12);
+
+      // ── Fetch quotes with 3s timeout per symbol, skip failures ──
       const quotes: CryptoQuote[] = [];
       for (const crypto of matched) {
-        const quote = await this.getCryptoQuote(crypto.symbol);
-        if (quote) quotes.push(quote);
+        try {
+          const quote = await this.getCryptoQuote(crypto.symbol);
+          if (quote) quotes.push(quote);
+        } catch {
+          // Skip symbols that fail — still show others
+        }
       }
       return quotes;
     } catch (error) {
