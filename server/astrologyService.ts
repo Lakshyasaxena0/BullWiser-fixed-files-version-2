@@ -312,14 +312,16 @@ export class AstrologyService {
     };
   }
 
-  combineAIAndAstroPredictions(aiPrediction: any, astroPrediction: AstrologyPrediction, feedbackAdjustment = 0): any {
+  combineAIAndAstroPredictions(aiPrediction: any, astroPrediction: AstrologyPrediction, feedbackAdjustment = 0, currentPrice = 0): any {
     // ── FIX: always return a valid object even when aiPrediction is null ──
     if (!aiPrediction) {
       return {
         prediction: {
           direction:   astroPrediction.direction,
           confidence:  astroPrediction.confidence,
-          priceTarget: { low: 0, high: 0 }, // routes.ts will override via fallback
+          priceTarget: {
+            low:  currentPrice > 0 ? Math.round(currentPrice * 0.975 * 100) / 100 : 0,
+            high: currentPrice > 0 ? Math.round(currentPrice * 1.025 * 100) / 100 : 0,
         },
         combinedConfidence: astroPrediction.confidence,
         finalDirection:     astroPrediction.direction,
