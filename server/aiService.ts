@@ -1,10 +1,20 @@
-import OpenAI from 'openai';
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { stockDataService } from './stockDataService';
 import { feedbackLearningService } from './feedbackLearningService';
 import { astrologyService } from './astrologyService';
 import { advancedAstrologyService } from './advancedAstrologyService';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' });
+// Gemini client — env var is still named OPENAI_API_KEY on Render
+const genAI = new GoogleGenerativeAI(process.env.OPENAI_API_KEY || '');
+const geminiFlash = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+async function geminiJSON(systemPrompt: string, userPrompt: string): Promise<any> {
+  const full = `${systemPrompt}\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code fences.\n\n${userPrompt}`;
+  const result = await geminiFlash.generateContent(full);
+  const text = result.response.text().trim()
+    .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '');
+  return JSON.parse(text);
+}
 
 // ── Stock → Sector mapping ────────────────────────────────────────────────────
 const STOCK_SECTOR_MAP: Record<string, string> = {
@@ -68,24 +78,21 @@ export class AIService {
         - SENSEX: ${context.marketIndices.sensex?.value || 'N/A'} (${context.marketIndices.sensex?.changePercent || 0}%)
         Recent Price History: ${JSON.stringify(context.historicalTrend.slice(-5))}
         Provide JSON: { "prediction": { "direction": "bullish|bearish|neutral", "confidence": 0-100, "priceTarget": { "low": number, "high": number }, "timeframe": "1-3 days" }, "analysis": { "technicalFactors": [...], "marketSentiment": "...", "keyRisks": [...], "recommendation": "..." }, "reasoning": "..." }`;
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages: [
-          { role: 'system', content: 'You are a professional stock market analyst. Respond with valid JSON only.' },
-          { role: 'user', content: prompt },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.3, max_tokens: 800,
-      });
-      const response = completion.choices[0]?.message?.content;
-      if (!response) throw new Error('No response from OpenAI');
-      const r = JSON.parse(response);
+
+      const r = await geminiJSON(
+        'You are a professional stock market analyst specializing in Indian equities (NSE/BSE).',
+        prompt
+      );
+
       return {
         prediction: {
           direction:   r.prediction?.direction   || 'neutral',
           confidence:  r.prediction?.confidence  || 60,
-          priceTarget: { low: r.prediction?.priceTarget?.low || currentPrice * 0.98, high: r.prediction?.priceTarget?.high || currentPrice * 1.02 },
-          timeframe:   r.prediction?.timeframe   || '1-3 days',
+          priceTarget: {
+            low:  r.prediction?.priceTarget?.low  || currentPrice * 0.98,
+            high: r.prediction?.priceTarget?.high || currentPrice * 1.02,
+          },
+          timeframe: r.prediction?.timeframe || '1-3 days',
         },
         analysis: {
           technicalFactors: r.analysis?.technicalFactors || [],
@@ -93,17 +100,17 @@ export class AIService {
           keyRisks:         r.analysis?.keyRisks         || [],
           recommendation:   r.analysis?.recommendation   || 'Hold and observe',
         },
-        reasoning: r.reasoning || 'AI-powered technical analysis',
+        reasoning: r.reasoning || 'Gemini AI technical analysis',
       };
     } catch (error) {
-      console.error('Error in AI analysis:', error);
+      console.error('Error in Gemini stock analysis:', error);
       return null;
     }
   }
 
   // ────────────────────────────────────────────────────────────────────────────
   // MAIN PREDICTION ENGINE
-  // Pipeline: AI (GPT-4o) + Basic Astro + Advanced Astro (D-10, Sector, Transits, Yogas)
+  // Pipeline: Gemini AI + Basic Astro + Advanced Astro (D-10, Sector, Transits, Yogas)
   // ────────────────────────────────────────────────────────────────────────────
   async generateEnhancedPrediction(
     symbol: string,
@@ -117,7 +124,7 @@ export class AIService {
         ? await feedbackLearningService.getLearningAdjustments(symbol, userId)
         : await feedbackLearningService.getLearningAdjustments(symbol);
 
-      // Step 2: GPT-4o AI analysis
+      // Step 2: Gemini AI analysis
       let aiPrediction: AIAnalysisResult | null = null;
       if (this.isConfigured()) {
         aiPrediction = await this.analyzeStock(symbol, currentPrice, historicalData);
@@ -134,12 +141,11 @@ export class AIService {
       let d10Analysis: any = null;
 
       try {
-        // 4a. Sector planetary analysis — how current planets affect this stock's industry
+        // 4a. Sector planetary analysis
         advancedAstroResult = await advancedAstrologyService.analyzeStockBySector(symbol, sector, new Date());
         console.log(`[AdvAstro] ${symbol} (${sector}): timing=${advancedAstroResult?.timing}, sectorStrength=${advancedAstroResult?.sectorStrength}`);
 
-        // 4b. D-10 Dashamsa chart — governs career/profession, most relevant for stocks
-        //     Using NSE market open time (09:15) at Mumbai (19.07°N, 72.87°E) as reference
+        // 4b. D-10 Dashamsa chart
         const d1Chart = advancedAstrologyService.generateD1Chart(new Date(), '09:15', 19.0760, 72.8777);
         d10Analysis   = advancedAstrologyService.generateD10Chart(d1Chart);
 
@@ -153,47 +159,42 @@ export class AIService {
         }, 0);
         yogaBonus = Math.max(-20, Math.min(20, Math.round(yogaBonus)));
 
-        // 4d. Planetary transits — current planetary movements vs natal positions
-        const transits       = advancedAstrologyService.calculateTransits(d1Chart, new Date());
-        const beneficCount   = transits.filter((t: any) => t.effect === 'beneficial').length;
-        const maleficCount   = transits.filter((t: any) => t.effect === 'malefic').length;
-        transitImpact        = Math.max(-15, Math.min(15, (beneficCount - maleficCount) * 3));
+        // 4d. Planetary transits
+        const transits     = advancedAstrologyService.calculateTransits(d1Chart, new Date());
+        const beneficCount = transits.filter((t: any) => t.effect === 'beneficial').length;
+        const maleficCount = transits.filter((t: any) => t.effect === 'malefic').length;
+        transitImpact      = Math.max(-15, Math.min(15, (beneficCount - maleficCount) * 3));
 
-        console.log(`[AdvAstro] D-10 yogas=${careerYogas.length}, yogaBonus=${yogaBonus}, transitImpact=${transitImpact}, benefic=${beneficCount}, malefic=${maleficCount}`);
+        console.log(`[AdvAstro] D-10 yogas=${careerYogas.length}, yogaBonus=${yogaBonus}, transitImpact=${transitImpact}`);
       } catch (advErr) {
         console.error('[AdvAstro] Advanced astrology error (non-fatal):', advErr);
       }
 
-      // Step 5: Combine AI + basic astro
+      // Step 5: Combine AI + basic astro — pass currentPrice so targets are computed
       let combinedPrediction = astrologyService.combineAIAndAstroPredictions(
-        aiPrediction, astroPrediction, learningAdjustment.confidenceAdjustment
+        aiPrediction, astroPrediction, learningAdjustment.confidenceAdjustment, currentPrice
       );
 
-      // Step 6: Apply advanced astrology adjustments ──────────────────────────
+      // Step 6: Apply advanced astrology adjustments
       if (advancedAstroResult) {
-        const sectorStrength      = advancedAstroResult.sectorStrength || 50; // 0–100
-        const sectorBias          = (sectorStrength - 50) / 50;               // -1 to +1
-        const sectorConfBoost     = Math.round(sectorBias * 12);
+        const sectorStrength  = advancedAstroResult.sectorStrength || 50;
+        const sectorBias      = (sectorStrength - 50) / 50;
+        const sectorConfBoost = Math.round(sectorBias * 12);
 
-        // Adjust combined confidence with sector + yoga + transit
         if (combinedPrediction.combinedConfidence !== undefined) {
           combinedPrediction.combinedConfidence = Math.min(95, Math.max(30,
             combinedPrediction.combinedConfidence + sectorConfBoost + yogaBonus + transitImpact
           ));
         }
 
-        // Soften strong directional calls when sector timing contradicts
         const timing = advancedAstroResult.timing;
         if (timing === 'excellent' && combinedPrediction.finalDirection === 'bearish') {
           combinedPrediction.finalDirection = 'neutral';
-          console.log(`[AdvAstro] Sector excellent — softened bearish→neutral for ${symbol}`);
         }
         if (timing === 'challenging' && combinedPrediction.finalDirection === 'bullish') {
           combinedPrediction.finalDirection = 'neutral';
-          console.log(`[AdvAstro] Sector challenging — softened bullish→neutral for ${symbol}`);
         }
 
-        // Merge sector key factors into technical factors list
         const sectorFactors = (advancedAstroResult.keyFactors || []).slice(0, 3)
           .map((f: string) => `[${sector} sector] ${f}`);
 
@@ -205,7 +206,6 @@ export class AIService {
           ...sectorFactors,
         ].slice(0, 6);
 
-        // D-10 yoga insights
         if (yogaBonus > 10) {
           combinedPrediction.analysis.technicalFactors.push('D-10 Dashamsa: Strong Raj/Dhana yoga — supports upward momentum');
         } else if (yogaBonus < -10) {
@@ -215,7 +215,6 @@ export class AIService {
           ];
         }
 
-        // Transit insights
         if (transitImpact > 8) {
           combinedPrediction.analysis.technicalFactors.push(`Planetary transits: ${Math.round(transitImpact / 3)} benefic influences active`);
         } else if (transitImpact < -8) {
@@ -225,7 +224,6 @@ export class AIService {
           ];
         }
 
-        // Attach advanced astro metadata to result
         combinedPrediction.advancedAstro = {
           sector,
           sectorStrength:       advancedAstroResult.sectorStrength,
@@ -263,12 +261,12 @@ export class AIService {
         predictionTime:       new Date().toISOString(),
         sector,
         sources: {
-          ai:        aiPrediction ? 'OpenAI GPT-4o' : 'Not available (quota/config)',
+          ai:        aiPrediction ? 'Google Gemini 1.5 Flash' : 'Not available',
           astrology: 'Vedic — Hora, Tithi, Nakshatra, Planetary positions',
           advanced:  advancedAstroResult
             ? `D-10 Dashamsa + ${sector} Sector Analysis + Planetary Transits + Yoga Analysis`
             : 'Not available',
-          feedback:  learningAdjustment.suggestedFactors.length > 0 ? 'Active feedback learning' : 'No feedback data yet',
+          feedback: learningAdjustment.suggestedFactors.length > 0 ? 'Active feedback learning' : 'No feedback data yet',
         },
       };
 
@@ -276,7 +274,7 @@ export class AIService {
     } catch (error) {
       console.error('Error generating enhanced prediction:', error);
       const fallbackAstro = await astrologyService.generateAstroPrediction(symbol, new Date(), currentPrice);
-      return astrologyService.combineAIAndAstroPredictions(null, fallbackAstro, 0);
+      return astrologyService.combineAIAndAstroPredictions(null, fallbackAstro, 0, currentPrice);
     }
   }
 
@@ -293,26 +291,31 @@ export class AIService {
 
       if (this.isConfigured()) {
         try {
-          const response = await openai.chat.completions.create({
-            model: 'gpt-4o',
-            messages: [
-              { role: 'system', content: 'You are an expert cryptocurrency analyst. Provide concise JSON predictions with max 80% confidence due to crypto volatility.' },
-              { role: 'user', content: `Analyze ${cryptoSymbol}: Price=$${currentPrice}, MarketCap=$${cryptoQuote?.marketCap?.toLocaleString() || 'N/A'}, 24hChange=${cryptoQuote?.changePercent24h?.toFixed(2) || 0}%, RecentData=${JSON.stringify(historicalData.slice(-5))}. Provide JSON: direction, confidence, priceTarget{low,high}, keyFactors, risks.` },
-            ],
-            max_tokens: 800, temperature: 0.3,
-          });
-          const aiResponse = response.choices[0]?.message?.content;
-          if (aiResponse) { aiPrediction = this.parseAIPrediction(aiResponse, currentPrice); metadata.aiEnabled = true; metadata.sources.unshift('openai'); }
-        } catch (aiError) { console.error('OpenAI crypto error:', aiError); }
+          const aiResponse = await geminiJSON(
+            'You are an expert cryptocurrency analyst. Provide concise JSON predictions. Keep confidence max 80% due to crypto volatility.',
+            `Analyze ${cryptoSymbol}: Price=$${currentPrice}, MarketCap=$${cryptoQuote?.marketCap?.toLocaleString() || 'N/A'}, 24hChange=${cryptoQuote?.changePercent24h?.toFixed(2) || 0}%, RecentData=${JSON.stringify(historicalData.slice(-5))}. Provide JSON: direction, confidence, priceTarget{low,high}, keyFactors, risks.`
+          );
+          if (aiResponse) {
+            aiPrediction = this.parseAIPrediction(JSON.stringify(aiResponse), currentPrice);
+            metadata.aiEnabled = true;
+            metadata.sources.unshift('gemini');
+          }
+        } catch (aiError) { console.error('Gemini crypto error:', aiError); }
       }
 
-      const astroStrength        = this.calculateCryptoAstroStrength(astroAnalysis, cryptoSymbol);
+      const astroStrength         = this.calculateCryptoAstroStrength(astroAnalysis, cryptoSymbol);
       const cryptoAstroPrediction = this.generateCryptoAstroPrediction(currentPrice, astroAnalysis, astroStrength);
-      const combinedPrediction   = this.combineCryptoPredictions(aiPrediction, cryptoAstroPrediction, currentPrice);
+      const combinedPrediction    = this.combineCryptoPredictions(aiPrediction, cryptoAstroPrediction, currentPrice);
       const personalizedPrediction = await feedbackLearningService.applyPersonalization(userId, `CRYPTO_${cryptoSymbol}`, combinedPrediction);
 
-      return { ...personalizedPrediction, astroFactors: astroAnalysis, astroStrength, metadata,
-        userPersonalization: userPersonalization ? { accuracyBoost: userPersonalization.personalizedConfidenceBoost, learningPhase: userPersonalization.bestTimeToTrade } : null,
+      return {
+        ...personalizedPrediction,
+        astroFactors: astroAnalysis,
+        astroStrength,
+        metadata,
+        userPersonalization: userPersonalization
+          ? { accuracyBoost: userPersonalization.personalizedConfidenceBoost, learningPhase: userPersonalization.bestTimeToTrade }
+          : null,
         learningInsights: await feedbackLearningService.getStockMetrics(`CRYPTO_${cryptoSymbol}`),
       };
     } catch (error) {
@@ -327,32 +330,61 @@ export class AIService {
     try {
       const d = JSON.parse(response);
       return {
-        prediction: { direction: d.direction || 'neutral', confidence: Math.min(d.confidence || 60, 80), priceTarget: { low: d.priceTarget?.low || currentPrice * 0.95, high: d.priceTarget?.high || currentPrice * 1.05 }, timeframe: d.timeframe || '24-72 hours' },
-        analysis: { technicalFactors: d.keyFactors || [], marketSentiment: d.marketSentiment || 'volatile', keyRisks: d.risks || [], recommendation: d.recommendation || 'Monitor closely' },
-        reasoning: d.reasoning || 'AI-driven crypto analysis',
+        prediction: {
+          direction:   d.direction || 'neutral',
+          confidence:  Math.min(d.confidence || 60, 80),
+          priceTarget: {
+            low:  d.priceTarget?.low  || currentPrice * 0.95,
+            high: d.priceTarget?.high || currentPrice * 1.05,
+          },
+          timeframe: d.timeframe || '24-72 hours',
+        },
+        analysis: {
+          technicalFactors: d.keyFactors || [],
+          marketSentiment:  d.marketSentiment || 'volatile',
+          keyRisks:         d.risks || [],
+          recommendation:   d.recommendation || 'Monitor closely',
+        },
+        reasoning: d.reasoning || 'Gemini AI crypto analysis',
       };
     } catch { return null; }
   }
 
   private calculateCryptoAstroStrength(astroAnalysis: any, cryptoSymbol: string): number {
     const map: Record<string, { planet: string; strength: number }> = {
-      BTC: { planet: 'Sun', strength: 0.9 }, ETH: { planet: 'Mercury', strength: 0.85 },
-      BNB: { planet: 'Venus', strength: 0.7 }, ADA: { planet: 'Jupiter', strength: 0.75 },
-      SOL: { planet: 'Mars', strength: 0.8 }, XRP: { planet: 'Saturn', strength: 0.6 },
-      DOT: { planet: 'Mercury', strength: 0.7 }, MATIC: { planet: 'Moon', strength: 0.65 },
-      AVAX: { planet: 'Mars', strength: 0.75 }, ATOM: { planet: 'Jupiter', strength: 0.7 },
+      BTC:  { planet: 'Sun',     strength: 0.9  },
+      ETH:  { planet: 'Mercury', strength: 0.85 },
+      BNB:  { planet: 'Venus',   strength: 0.7  },
+      ADA:  { planet: 'Jupiter', strength: 0.75 },
+      SOL:  { planet: 'Mars',    strength: 0.8  },
+      XRP:  { planet: 'Saturn',  strength: 0.6  },
+      DOT:  { planet: 'Mercury', strength: 0.7  },
+      MATIC:{ planet: 'Moon',    strength: 0.65 },
+      AVAX: { planet: 'Mars',    strength: 0.75 },
+      ATOM: { planet: 'Jupiter', strength: 0.7  },
     };
     const cd = map[cryptoSymbol] || { planet: 'Mercury', strength: 0.6 };
     return Math.min(((astroAnalysis.planetary?.[cd.planet.toLowerCase()] || 50) * cd.strength) * 0.85, 80);
   }
 
   private generateCryptoAstroPrediction(currentPrice: number, astroAnalysis: any, astroStrength: number): any {
-    const pv = (astroStrength - 50) / 100 * 1.6;
+    const pv  = (astroStrength - 50) / 100 * 1.6;
     const dir = pv > 0.05 ? 'bullish' : pv < -0.05 ? 'bearish' : 'neutral';
     return {
-      prediction: { direction: dir, priceTarget: { low: Math.round(currentPrice * (1 - Math.abs(pv) * 0.12) * 100) / 100, high: Math.round(currentPrice * (1 + Math.abs(pv) * 0.12) * 100) / 100 } },
-      confidence: Math.round(astroStrength), finalDirection: dir,
-      astroRecommendation: dir === 'bullish' ? 'Positive cosmic energy — consider long position' : dir === 'bearish' ? 'Negative cosmic energy — reduce exposure' : 'Mixed signals — hold current position',
+      prediction: {
+        direction:   dir,
+        priceTarget: {
+          low:  Math.round(currentPrice * (1 - Math.abs(pv) * 0.12) * 100) / 100,
+          high: Math.round(currentPrice * (1 + Math.abs(pv) * 0.12) * 100) / 100,
+        },
+      },
+      confidence:          Math.round(astroStrength),
+      finalDirection:      dir,
+      astroRecommendation: dir === 'bullish'
+        ? 'Positive cosmic energy — consider long position'
+        : dir === 'bearish'
+        ? 'Negative cosmic energy — reduce exposure'
+        : 'Mixed signals — hold current position',
       reasoning: 'Vedic astrology analysis with crypto volatility adjustment',
     };
   }
@@ -362,31 +394,32 @@ export class AIService {
     const aw = 0.35, sw = 0.65;
     const finalDir = astroPrediction.finalDirection || aiPrediction.prediction?.direction || 'neutral';
     return {
-      prediction: { direction: finalDir, priceTarget: {
-        low:  Math.round(((aiPrediction.prediction?.priceTarget?.low  || currentPrice * 0.92) * aw + (astroPrediction.prediction?.priceTarget?.low  || currentPrice * 0.88) * sw) * 100) / 100,
-        high: Math.round(((aiPrediction.prediction?.priceTarget?.high || currentPrice * 1.08) * aw + (astroPrediction.prediction?.priceTarget?.high || currentPrice * 1.12) * sw) * 100) / 100,
-      }},
+      prediction: {
+        direction:   finalDir,
+        priceTarget: {
+          low:  Math.round(((aiPrediction.prediction?.priceTarget?.low  || currentPrice * 0.92) * aw + (astroPrediction.prediction?.priceTarget?.low  || currentPrice * 0.88) * sw) * 100) / 100,
+          high: Math.round(((aiPrediction.prediction?.priceTarget?.high || currentPrice * 1.08) * aw + (astroPrediction.prediction?.priceTarget?.high || currentPrice * 1.12) * sw) * 100) / 100,
+        },
+      },
       combinedConfidence: Math.round((aiPrediction.confidence || 60) * aw + (astroPrediction.confidence || 50) * sw),
-      confidence: Math.round((aiPrediction.confidence || 60) * aw + (astroPrediction.confidence || 50) * sw),
-      finalDirection: finalDir, analysis: aiPrediction.analysis,
+      confidence:         Math.round((aiPrediction.confidence || 60) * aw + (astroPrediction.confidence || 50) * sw),
+      finalDirection:     finalDir,
+      analysis:           aiPrediction.analysis,
       astroRecommendation: astroPrediction.astroRecommendation,
-      reasoning: `Combined AI (${aw * 100}%) + Astrology (${sw * 100}%) analysis`,
+      reasoning:          `Combined Gemini AI (${aw * 100}%) + Astrology (${sw * 100}%) analysis`,
     };
   }
 
   async generateMarketInsights(marketData: any): Promise<string | null> {
     if (!this.isConfigured()) return null;
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: [
-          { role: 'system', content: 'You are a concise market analyst. Provide brief, actionable market insights.' },
-          { role: 'user', content: `Market data: NIFTY=${marketData.indices?.nifty50?.value}(${marketData.indices?.nifty50?.changePercent}%), SENSEX=${marketData.indices?.sensex?.value}(${marketData.indices?.sensex?.changePercent}%), Gainers: ${marketData.topGainers?.slice(0,3).map((s:any)=>s.symbol).join(',')}, Losers: ${marketData.topLosers?.slice(0,3).map((s:any)=>s.symbol).join(',')}. Provide 2-3 sentence insight.` },
-        ],
-        temperature: 0.7, max_tokens: 100,
-      });
-      return completion.choices[0]?.message?.content || null;
-    } catch (error) { console.error('Error generating market insights:', error); return null; }
+      const prompt = `You are a concise market analyst for Indian equities. Provide 2-3 sentences of actionable insight.\n\nMarket data: NIFTY=${marketData.indices?.nifty50?.value}(${marketData.indices?.nifty50?.changePercent}%), SENSEX=${marketData.indices?.sensex?.value}(${marketData.indices?.sensex?.changePercent}%), Gainers: ${marketData.topGainers?.slice(0,3).map((s:any)=>s.symbol).join(',')}, Losers: ${marketData.topLosers?.slice(0,3).map((s:any)=>s.symbol).join(',')}. Respond in plain text only, no JSON.`;
+      const result = await geminiFlash.generateContent(prompt);
+      return result.response.text() || null;
+    } catch (error) {
+      console.error('Error generating market insights:', error);
+      return null;
+    }
   }
 }
 
