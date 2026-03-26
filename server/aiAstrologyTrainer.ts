@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { pythonAstrologyBridge } from './pythonAstrologyBridge';
 import { advancedAstrologyService } from './advancedAstrologyService';
 import { db } from './db';
 import { trainingData } from '@shared/schema';
