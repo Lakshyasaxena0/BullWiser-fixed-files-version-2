@@ -427,10 +427,10 @@ export default function Predictions() {
                               <p className="text-xs text-gray-500">Mid Target</p>
                               <p className="font-semibold text-purple-700 text-sm">₹{metrics.mid}</p>
                             </div>
-                            <div className={`rounded-lg p-2.5 ${parseFloat(metrics.midChange) >= 0 ? "bg-green-50" : "bg-red-50"}`}>
+                            <div className={`rounded-lg p-2.5 ${predResult.direction === "bearish" ? "bg-red-50" : "bg-green-50"}`}>
                               <p className="text-xs text-gray-500">Expected Move</p>
-                              <p className={`font-semibold text-sm ${parseFloat(metrics.midChange) >= 0 ? "text-green-700" : "text-red-700"}`}>
-                                {parseFloat(metrics.midChange) >= 0 ? "+" : ""}{metrics.midChange}%
+                              <p className={`font-semibold text-sm ${predResult.direction === "bearish" ? "text-red-700" : "text-green-700"}`}>
+                                {predResult.direction === "bearish" ? "-" : "+"}{predResult.direction === "bearish" ? metrics.downside : metrics.upside}%
                               </p>
                             </div>
                           </div>
