@@ -313,26 +313,26 @@ export class AstrologyService {
   }
 
   combineAIAndAstroPredictions(aiPrediction: any, astroPrediction: AstrologyPrediction, feedbackAdjustment = 0, currentPrice = 0): any {
-    // ── FIX: always return a valid object even when aiPrediction is null ──
     if (!aiPrediction) {
       return {
         prediction: {
-          direction:   astroPrediction.direction,
-          confidence:  astroPrediction.confidence,
+          direction:  astroPrediction.direction,
+          confidence: astroPrediction.confidence,
           priceTarget: {
             low:  currentPrice > 0 ? Math.round(currentPrice * 0.975 * 100) / 100 : 0,
             high: currentPrice > 0 ? Math.round(currentPrice * 1.025 * 100) / 100 : 0,
+          },
         },
-        combinedConfidence: astroPrediction.confidence,
-        finalDirection:     astroPrediction.direction,
+        combinedConfidence:  astroPrediction.confidence,
+        finalDirection:      astroPrediction.direction,
         astroRecommendation: astroPrediction.recommendation,
-        warnings:           astroPrediction.warnings,
-        astroFactors:       astroPrediction.factors,
+        warnings:            astroPrediction.warnings,
+        astroFactors:        astroPrediction.factors,
         metadata: { aiEnabled: false, feedbackLearningApplied: false },
       };
     }
 
-    const aiDir   = aiPrediction.prediction?.direction || 'neutral';
+    const aiDir    = aiPrediction.prediction?.direction || 'neutral';
     const astroDir = astroPrediction.direction;
     const opposite = (aiDir === 'bullish' && astroDir === 'bearish') || (aiDir === 'bearish' && astroDir === 'bullish');
 
@@ -340,10 +340,12 @@ export class AstrologyService {
       return {
         ...aiPrediction,
         prediction: { ...aiPrediction.prediction, direction: astroDir, confidence: astroPrediction.confidence },
-        astroOverride: true, astroFactors: astroPrediction.factors,
+        astroOverride:      true,
+        astroFactors:       astroPrediction.factors,
         combinedConfidence: astroPrediction.confidence,
-        recommendation: `${astroPrediction.recommendation}`,
-        warnings: astroPrediction.warnings,
+        finalDirection:     astroDir,
+        recommendation:     astroPrediction.recommendation,
+        warnings:           astroPrediction.warnings,
       };
     }
 
@@ -354,13 +356,13 @@ export class AstrologyService {
     );
     return {
       ...aiPrediction,
-      astroFactors:       astroPrediction.factors,
-      astroDirection:     astroDir,
-      astroStrength:      astroPrediction.strength,
-      combinedConfidence: Math.min(95, Math.max(30, combined)),
+      astroFactors:        astroPrediction.factors,
+      astroDirection:      astroDir,
+      astroStrength:       astroPrediction.strength,
+      combinedConfidence:  Math.min(95, Math.max(30, combined)),
       astroRecommendation: astroPrediction.recommendation,
-      warnings:           astroPrediction.warnings,
-      finalDirection:     aiDir === astroDir ? aiDir : astroDir,
+      warnings:            astroPrediction.warnings,
+      finalDirection:      aiDir === astroDir ? aiDir : astroDir,
     };
   }
 
