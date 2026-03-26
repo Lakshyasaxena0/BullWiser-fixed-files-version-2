@@ -6,8 +6,7 @@ import { advancedAstrologyService } from './advancedAstrologyService';
 
 // Gemini client — env var is still named OPENAI_API_KEY on Render
 const genAI = new GoogleGenerativeAI(process.env.OPENAI_API_KEY || '');
-const geminiFlash = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
+const geminiFlash = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
 async function geminiJSON(systemPrompt: string, userPrompt: string): Promise<any> {
   const full = `${systemPrompt}\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code fences.\n\n${userPrompt}`;
   const result = await geminiFlash.generateContent(full);
