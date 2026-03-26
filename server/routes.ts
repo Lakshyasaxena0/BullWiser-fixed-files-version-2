@@ -14,6 +14,7 @@ import * as crypto from 'crypto';
 import { db } from "./db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import { predictions, feedback } from '@shared/schema';
 
 function calculateBullwiserPrice(mode: string, tradeType: string, tradesPerDay: number, duration: string, referralCount: number = 0) {
   const tradeTypeRates = { 'low': 700, 'medium': 1400, 'high': 2100 };
