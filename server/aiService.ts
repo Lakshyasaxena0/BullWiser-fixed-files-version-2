@@ -5,16 +5,23 @@ import { astrologyService } from './astrologyService';
 import { advancedAstrologyService } from './advancedAstrologyService';
 
 // Gemini client — env var is still named OPENAI_API_KEY on Render
-const genAI = new GoogleGenerativeAI(process.env.OPENAI_API_KEY || '');
-const geminiFlash = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+import OpenAI from 'openai';
+const groq = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || '',
+  baseURL: 'https://api.groq.com/openai/v1',
+});
 async function geminiJSON(systemPrompt: string, userPrompt: string): Promise<any> {
-  const full = `${systemPrompt}\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code fences.\n\n${userPrompt}`;
-  const result = await geminiFlash.generateContent(full);
-  const text = result.response.text().trim()
-    .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '');
-  return JSON.parse(text);
+  const response = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'system', content: systemPrompt + '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code fences.' },
+      { role: 'user', content: userPrompt },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.3,
+  });
+  return JSON.parse(response.choices[0].message.content || '{}');
 }
-
 // ── Stock → Sector mapping ────────────────────────────────────────────────────
 const STOCK_SECTOR_MAP: Record<string, string> = {
   TCS: 'IT', INFY: 'IT', WIPRO: 'IT', HCLTECH: 'IT', TECHM: 'IT',
