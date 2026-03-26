@@ -52,24 +52,182 @@ function calculateCryptoBillingPrice(mode: string, tradesPerDay: number, cryptoV
 
 let trainingInProgress = false;
 
-async function runTrainingSimulation() {
+async function runRealTraining() {
   if (trainingInProgress) return;
   trainingInProgress = true;
-  await storage.updateTrainingStatus(0, 'Starting', Math.floor(Date.now() / 1000));
-  const total = 2000, sectors = 10, perSector = Math.floor(total / sectors);
-  for (let sector = 0; sector < sectors; sector++) {
-    for (let i = 0; i < perSector; i++) {
-      await new Promise(resolve => setTimeout(resolve, 10));
-      const processed = sector * perSector + i + 1;
-      const progress = Math.floor((processed / total) * 100);
-      if (progress % 5 === 0) await storage.updateTrainingStatus(progress, `Processing sector ${sector + 1} (${i + 1}/${perSector})`);
+  const startTs = Math.floor(Date.now() / 1000);
+  try {
+    await storage.updateTrainingStatus(0, 'Loading predictions from database...', startTs);
+
+    // Step 1: Load all past predictions with feedback
+    const allPredictions = await db.select().from(predictions).limit(500);
+    const allFeedback    = await db.select().from(feedback).limit(500);
+
+    await storage.updateTrainingStatus(10, `Loaded ${allPredictions.length} predictions, ${allFeedback.length} feedback records`, startTs);
+
+    if (allPredictions.length < 10) {
+      await storage.updateTrainingStatus(100, 'Not enough data yet — need at least 10 predictions with feedback to train', startTs);
+      trainingInProgress = false;
+      return;
     }
-    await new Promise(resolve => setTimeout(resolve, 300));
+
+    await storage.updateTrainingStatus(20, 'Building training cases from astrological features...', startTs);
+
+    // Step 2: Build training cases — match predictions to feedback
+    const feedbackByStock = new Map<string, typeof allFeedback>();
+    for (const f of allFeedback) {
+      if (!feedbackByStock.has(f.stock)) feedbackByStock.set(f.stock, []);
+      feedbackByStock.get(f.stock)!.push(f);
+    }
+
+    const SECTOR_MAP: Record<string, string> = {
+      TCS: 'IT', INFY: 'IT', WIPRO: 'IT', HCLTECH: 'IT', TECHM: 'IT',
+      HDFCBANK: 'Banking', ICICIBANK: 'Banking', SBIN: 'Banking', AXISBANK: 'Banking',
+      KOTAKBANK: 'Banking', RELIANCE: 'Energy', ONGC: 'Energy', NTPC: 'Energy',
+      SUNPHARMA: 'Pharma', DRREDDY: 'Pharma', CIPLA: 'Pharma',
+      MARUTI: 'Auto', TATAMOTORS: 'Auto', TATASTEEL: 'Metals', JSWSTEEL: 'Metals',
+    };
+
+    const trainingCases: Array<{
+      stockSymbol: string; sector: string; date: Date;
+      actualDirection: 'bullish' | 'bearish' | 'neutral'; actualReturn: number;
+    }> = [];
+
+    for (const pred of allPredictions) {
+      const stockFeedbacks = feedbackByStock.get(pred.stock) || [];
+      const matchedFeedback = stockFeedbacks.find(f =>
+        Math.abs(f.submittedAt - (pred.createdAt ? Math.floor(pred.createdAt.getTime() / 1000) : 0)) < 7 * 86400
+      );
+      if (!matchedFeedback?.actualPrice) continue;
+
+      const actualChange = ((matchedFeedback.actualPrice - pred.currentPrice) / pred.currentPrice) * 100;
+      const actualDirection: 'bullish' | 'bearish' | 'neutral' =
+        actualChange > 1 ? 'bullish' : actualChange < -1 ? 'bearish' : 'neutral';
+      const symbol = pred.stock.replace('CRYPTO_', '');
+
+      trainingCases.push({
+        stockSymbol:     symbol,
+        sector:          SECTOR_MAP[symbol] || 'General',
+        date:            pred.createdAt || new Date(),
+        actualDirection,
+        actualReturn:    actualChange,
+      });
+    }
+
+    await storage.updateTrainingStatus(40, `Built ${trainingCases.length} training cases from real outcomes`, startTs);
+
+    if (trainingCases.length < 5) {
+      await storage.updateTrainingStatus(100, `Only ${trainingCases.length} matched cases — submit more feedback with actual prices to improve training`, startTs);
+      trainingInProgress = false;
+      return;
+    }
+
+    // Step 3: Run batch training through aiAstrologyTrainer
+    await storage.updateTrainingStatus(50, 'Running astrological pattern training...', startTs);
+    const result = await aiAstrologyTrainer.batchTrainOnHistoricalData(
+      trainingCases,
+      (progress) => {
+        const scaled = 50 + Math.floor(progress * 0.45);
+        storage.updateTrainingStatus(scaled, `Training: ${progress}% complete`, startTs);
+      }
+    );
+
+    await storage.updateTrainingStatus(98, 'Saving performance metrics...', startTs);
+    console.log(`[Training] Completed: ${result.successfulCases}/${result.totalCases} cases, accuracy: ${result.overallAccuracy.toFixed(1)}%`);
+    console.log(`[Training] Key learnings:`, result.keyLearnings.slice(0, 3));
+
+    const sectorSummary = Object.entries(result.sectorAccuracies)
+      .map(([s, a]) => `${s}: ${a.toFixed(0)}%`).join(', ');
+    await storage.updateTrainingStatus(100,
+      `Done — ${result.overallAccuracy.toFixed(1)}% accuracy on ${result.totalCases} cases. Sectors: ${sectorSummary || 'N/A'}`,
+      startTs
+    );
+  } catch (error) {
+    console.error('[Training] Error:', error);
+    await storage.updateTrainingStatus(0, `Training failed: ${error instanceof Error ? error.message : 'Unknown error'}`, startTs);
+  } finally {
+    trainingInProgress = false;
   }
-  await storage.updateTrainingStatus(100, 'Completed');
-  trainingInProgress = false;
 }
 
+    await storage.updateTrainingStatus(20, 'Building training cases from astrological features...', startTs);
+
+    // Step 2: Build training cases — match predictions to feedback
+    const feedbackByStock = new Map<string, typeof allFeedback>();
+    for (const f of allFeedback) {
+      if (!feedbackByStock.has(f.stock)) feedbackByStock.set(f.stock, []);
+      feedbackByStock.get(f.stock)!.push(f);
+    }
+
+    const SECTOR_MAP: Record<string, string> = {
+      TCS: 'IT', INFY: 'IT', WIPRO: 'IT', HCLTECH: 'IT', TECHM: 'IT',
+      HDFCBANK: 'Banking', ICICIBANK: 'Banking', SBIN: 'Banking', AXISBANK: 'Banking',
+      KOTAKBANK: 'Banking', RELIANCE: 'Energy', ONGC: 'Energy', NTPC: 'Energy',
+      SUNPHARMA: 'Pharma', DRREDDY: 'Pharma', CIPLA: 'Pharma',
+      MARUTI: 'Auto', TATAMOTORS: 'Auto', TATASTEEL: 'Metals', JSWSTEEL: 'Metals',
+    };
+
+    const trainingCases: Array<{
+      stockSymbol: string; sector: string; date: Date;
+      actualDirection: 'bullish' | 'bearish' | 'neutral'; actualReturn: number;
+    }> = [];
+
+    for (const pred of allPredictions) {
+      const stockFeedbacks = feedbackByStock.get(pred.stock) || [];
+      const matchedFeedback = stockFeedbacks.find(f =>
+        Math.abs(f.submittedAt - (pred.createdAt ? Math.floor(pred.createdAt.getTime() / 1000) : 0)) < 7 * 86400
+      );
+      if (!matchedFeedback?.actualPrice) continue;
+
+      const actualChange = ((matchedFeedback.actualPrice - pred.currentPrice) / pred.currentPrice) * 100;
+      const actualDirection: 'bullish' | 'bearish' | 'neutral' =
+        actualChange > 1 ? 'bullish' : actualChange < -1 ? 'bearish' : 'neutral';
+      const symbol = pred.stock.replace('CRYPTO_', '');
+
+      trainingCases.push({
+        stockSymbol:     symbol,
+        sector:          SECTOR_MAP[symbol] || 'General',
+        date:            pred.createdAt || new Date(),
+        actualDirection,
+        actualReturn:    actualChange,
+      });
+    }
+
+    await storage.updateTrainingStatus(40, `Built ${trainingCases.length} training cases from real outcomes`, startTs);
+
+    if (trainingCases.length < 5) {
+      await storage.updateTrainingStatus(100, `Only ${trainingCases.length} matched cases — submit more feedback with actual prices to improve training`, startTs);
+      trainingInProgress = false;
+      return;
+    }
+
+    // Step 3: Run batch training through aiAstrologyTrainer
+    await storage.updateTrainingStatus(50, 'Running astrological pattern training...', startTs);
+    const result = await aiAstrologyTrainer.batchTrainOnHistoricalData(
+      trainingCases,
+      (progress) => {
+        const scaled = 50 + Math.floor(progress * 0.45);
+        storage.updateTrainingStatus(scaled, `Training: ${progress}% complete`, startTs);
+      }
+    );
+
+    await storage.updateTrainingStatus(98, 'Saving performance metrics...', startTs);
+    console.log(`[Training] Completed: ${result.successfulCases}/${result.totalCases} cases, accuracy: ${result.overallAccuracy.toFixed(1)}%`);
+    console.log(`[Training] Key learnings:`, result.keyLearnings.slice(0, 3));
+
+    const sectorSummary = Object.entries(result.sectorAccuracies)
+      .map(([s, a]) => `${s}: ${a.toFixed(0)}%`).join(', ');
+    await storage.updateTrainingStatus(100,
+      `Done — ${result.overallAccuracy.toFixed(1)}% accuracy on ${result.totalCases} cases. Sectors: ${sectorSummary || 'N/A'}`,
+      startTs
+    );
+  } catch (error) {
+    console.error('[Training] Error:', error);
+    await storage.updateTrainingStatus(0, `Training failed: ${error instanceof Error ? error.message : 'Unknown error'}`, startTs);
+  } finally {
+    trainingInProgress = false;
+  }
+}
 export function registerRoutes(app: Express): Server {
   setupAuth(app);
 
