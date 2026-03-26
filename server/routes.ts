@@ -231,7 +231,8 @@ export function registerRoutes(app: Express): Server {
         keyRisks:         enhancedPrediction.warnings || enhancedPrediction.analysis?.keyRisks || [],
         recommendation:   enhancedPrediction.astroRecommendation || enhancedPrediction.analysis?.recommendation || 'Hold and observe',
         reasoning:        enhancedPrediction.reasoning || 'Astrology-based analysis',
-        aiPowered:        enhancedPrediction.metadata?.aiEnabled || false,
+       aiPowered:        enhancedPrediction.metadata?.aiEnabled || false,
+        livePriceAvailable: currentPrice > 0,
         feedbackEnhanced: enhancedPrediction.metadata?.feedbackLearningApplied || false,
         companyName:      realTimeQuote.companyName,
         ...(showAstroDetails && {
