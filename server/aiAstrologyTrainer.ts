@@ -10,7 +10,7 @@ import path from 'path';
 // Gemini Pro for deeper astrological chart analysis
 // env var is still named OPENAI_API_KEY on Render — value is now the Gemini key
 const genAI = new GoogleGenerativeAI(process.env.OPENAI_API_KEY || '');
-const geminiPro = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+const geminiPro = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
 
 async function geminiJSON(systemPrompt: string, userPrompt: string): Promise<any> {
   const full = `${systemPrompt}\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code fences.\n\n${userPrompt}`;
