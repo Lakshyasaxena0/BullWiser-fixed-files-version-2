@@ -562,17 +562,49 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.post('/api/feedback', isAuthenticated, async (req: any, res) => {
+    app.post('/api/feedback', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.id;
-      const { stock = 'UNKNOWN', when = '', actualPrice, useful = 'yes' } = req.body;
-      await storage.createFeedback({ userId, stock, requestedTime: when, actualPrice: actualPrice ? parseFloat(actualPrice) : null, useful: (useful === 'yes' || useful === 'true' || useful === true) ? 1 : 0, submittedAt: Math.floor(Date.now() / 1000) });
+      const {
+        stock = 'UNKNOWN',
+        when = '',
+        actualPrice,
+        useful = 'yes',
+        predictionId,
+        actualDirection = 'neutral',
+      } = req.body;
+
+      const wasUseful = useful === 'yes' || useful === 'true' || useful === true;
+      const parsedPrice = actualPrice ? parseFloat(actualPrice) : null;
+
+      // If predictionId is provided, use the full learning service for real accuracy tracking
+      if (predictionId && parsedPrice) {
+        await feedbackLearningService.recordFeedback(
+          userId,
+          parseInt(predictionId),
+          parsedPrice,
+          actualDirection as 'up' | 'down' | 'neutral',
+          wasUseful
+        );
+        res.json({ status: 'ok', message: 'Feedback recorded with accuracy tracking' });
+        return;
+      }
+
+      // Fallback: basic feedback without a predictionId
+      await storage.createFeedback({
+        userId,
+        stock,
+        requestedTime: when,
+        actualPrice: parsedPrice,
+        useful: wasUseful ? 1 : 0,
+        submittedAt: Math.floor(Date.now() / 1000),
+      });
       res.json({ status: 'ok' });
     } catch (error) {
+      console.error('Feedback error:', error);
       res.status(500).json({ message: "Error submitting feedback" });
     }
   });
-
   app.post('/api/training/start', async (req, res) => {
     if (trainingInProgress) return res.json({ status: 'running' });
     runRealTraining();
