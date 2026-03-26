@@ -316,11 +316,12 @@ export class StockDataService {
       const endDate = new Date();
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - days);
-            const data = await yahooFinance.historical(`${symbol}.NS`, {
+            const result = await yahooFinance.chart(`${symbol}.NS`, {
         period1: startDate,
         period2: endDate,
         interval: '1d',
       }, { validateResult: false });
+      const data = result?.quotes || [];
       if (!data || data.length === 0) return [];
       const { bias } = calculateAstrologyBias(symbol);
       const biasMultiplier = 1 + (bias * 0.001);
