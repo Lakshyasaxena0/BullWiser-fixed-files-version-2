@@ -574,7 +574,7 @@ export function registerRoutes(app: Express): Server {
 
   app.post('/api/training/start', async (req, res) => {
     if (trainingInProgress) return res.json({ status: 'running' });
-    runTrainingSimulation();
+    runRealTraining();
     res.json({ status: 'started' });
   });
 
