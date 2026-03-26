@@ -268,20 +268,47 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.post('/api/crypto/predict', isAuthenticated, async (req: any, res) => {
+    app.post('/api/crypto/predict', isAuthenticated, async (req: any, res) => {
     try {
-      const { crypto: cryptoSymbol = 'BTC', when, mode = 'suggestion', tradesPerDay = 1, cryptoValue = 10000, duration = 'daily', referralCount = 0 } = req.body;
+      const { crypto: cryptoSymbol = 'BTC', when, mode = 'suggestion', riskLevel = 'high' } = req.body;
       const userId = req.user.id;
       const cryptoQuote = await cryptoDataService.getCryptoQuote(cryptoSymbol.toUpperCase());
       if (!cryptoQuote) return res.status(404).json({ message: "Cryptocurrency not found" });
-      const bill = calculateCryptoBillingPrice(mode, parseInt(tradesPerDay), parseFloat(cryptoValue), duration, parseInt(referralCount));
-      const startTs = Math.floor(Date.now() / 1000);
-      const durationMap: any = { daily: 86400, weekly: 7*86400, monthly: 30*86400 };
-      const endTs = startTs + (durationMap[duration] || 365*86400);
-      const subscription = await storage.createSubscription({ userId, mode: `crypto-${mode}`, tradeType: 'crypto', tradesPerDay: parseInt(tradesPerDay), duration, startTs, endTs, price: bill.finalBill });
-      return res.json({ billCreated: true, subscriptionId: subscription.id, cryptoSymbol: cryptoSymbol.toUpperCase(), cryptoName: cryptoQuote.name, currentPrice: cryptoQuote.lastPrice, billing: bill, message: "Payment required to generate crypto prediction", paymentRequired: true });
+      const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
+      const currentPrice = cryptoQuote.adjustedPrice || cryptoQuote.lastPrice;
+      const historicalData = await cryptoDataService.getCryptoHistoricalData(cryptoSymbol.toUpperCase(), 30);
+      const enhancedPrediction = await aiService.generateEnhancedCryptoPrediction(cryptoSymbol.toUpperCase(), currentPrice, userId, historicalData, cryptoQuote);
+      const finalPrediction = {
+        crypto: cryptoSymbol.toUpperCase(),
+        name: cryptoQuote.name,
+        when: whenDate.toISOString(),
+        currentPrice,
+        predLow:    enhancedPrediction.prediction?.priceTarget?.low  || currentPrice * 0.92,
+        predHigh:   enhancedPrediction.prediction?.priceTarget?.high || currentPrice * 1.08,
+        confidence: enhancedPrediction.combinedConfidence || 65,
+        direction:  enhancedPrediction.finalDirection || 'neutral',
+        volatility: 'high',
+        technicalFactors: enhancedPrediction.analysis?.technicalFactors || [],
+        marketSentiment:  enhancedPrediction.analysis?.marketSentiment || 'mixed',
+        keyRisks:         enhancedPrediction.warnings || [],
+        recommendation:   enhancedPrediction.astroRecommendation || 'Hold and observe',
+        reasoning:        enhancedPrediction.reasoning || 'Astrology-based crypto analysis',
+        marketCap:  cryptoQuote.marketCap,
+        volume24h:  cryptoQuote.volume24h,
+        change24h:  cryptoQuote.changePercent24h,
+        aiPowered:  enhancedPrediction.metadata?.aiEnabled || false,
+        livePriceAvailable: currentPrice > 0,
+      };
+      await storage.createPrediction({
+        userId, stock: `CRYPTO_${finalPrediction.crypto}`,
+        currentPrice: finalPrediction.currentPrice,
+        predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh,
+        confidence: finalPrediction.confidence, mode, riskLevel, targetDate: whenDate,
+      });
+      return res.json(finalPrediction);
     } catch (error) {
-      res.status(500).json({ message: "Error creating crypto prediction bill" });
+      console.error('Crypto prediction error:', error);
+      res.status(500).json({ message: "Error generating crypto prediction" });
     }
   });
 
