@@ -53,6 +53,9 @@ function calculateCryptoBillingPrice(mode: string, tradesPerDay: number, cryptoV
 
 let trainingInProgress = false;
 
+// ── REAL training function — uses actual prediction + feedback data ────────────
+// Called by POST /api/training/start
+// Replaces the old fake runTrainingSimulation() that just counted to 100
 async function runRealTraining() {
   if (trainingInProgress) return;
   trainingInProgress = true;
@@ -107,11 +110,11 @@ async function runRealTraining() {
       const symbol = pred.stock.replace('CRYPTO_', '');
 
       trainingCases.push({
-        stockSymbol:     symbol,
-        sector:          SECTOR_MAP[symbol] || 'General',
-        date:            pred.createdAt || new Date(),
+        stockSymbol:  symbol,
+        sector:       SECTOR_MAP[symbol] || 'General',
+        date:         pred.createdAt || new Date(),
         actualDirection,
-        actualReturn:    actualChange,
+        actualReturn: actualChange,
       });
     }
 
@@ -138,7 +141,8 @@ async function runRealTraining() {
     console.log(`[Training] Key learnings:`, result.keyLearnings.slice(0, 3));
 
     const sectorSummary = Object.entries(result.sectorAccuracies)
-      .map(([s, a]) => `${s}: ${a.toFixed(0)}%`).join(', ');
+      .map(([s, a]) => `${s}: ${(a as number).toFixed(0)}%`).join(', ');
+
     await storage.updateTrainingStatus(100,
       `Done — ${result.overallAccuracy.toFixed(1)}% accuracy on ${result.totalCases} cases. Sectors: ${sectorSummary || 'N/A'}`,
       startTs
@@ -150,85 +154,8 @@ async function runRealTraining() {
     trainingInProgress = false;
   }
 }
+// ─────────────────────────────────────────────────────────────────────────────
 
-    await storage.updateTrainingStatus(20, 'Building training cases from astrological features...', startTs);
-
-    // Step 2: Build training cases — match predictions to feedback
-    const feedbackByStock = new Map<string, typeof allFeedback>();
-    for (const f of allFeedback) {
-      if (!feedbackByStock.has(f.stock)) feedbackByStock.set(f.stock, []);
-      feedbackByStock.get(f.stock)!.push(f);
-    }
-
-    const SECTOR_MAP: Record<string, string> = {
-      TCS: 'IT', INFY: 'IT', WIPRO: 'IT', HCLTECH: 'IT', TECHM: 'IT',
-      HDFCBANK: 'Banking', ICICIBANK: 'Banking', SBIN: 'Banking', AXISBANK: 'Banking',
-      KOTAKBANK: 'Banking', RELIANCE: 'Energy', ONGC: 'Energy', NTPC: 'Energy',
-      SUNPHARMA: 'Pharma', DRREDDY: 'Pharma', CIPLA: 'Pharma',
-      MARUTI: 'Auto', TATAMOTORS: 'Auto', TATASTEEL: 'Metals', JSWSTEEL: 'Metals',
-    };
-
-    const trainingCases: Array<{
-      stockSymbol: string; sector: string; date: Date;
-      actualDirection: 'bullish' | 'bearish' | 'neutral'; actualReturn: number;
-    }> = [];
-
-    for (const pred of allPredictions) {
-      const stockFeedbacks = feedbackByStock.get(pred.stock) || [];
-      const matchedFeedback = stockFeedbacks.find(f =>
-        Math.abs(f.submittedAt - (pred.createdAt ? Math.floor(pred.createdAt.getTime() / 1000) : 0)) < 7 * 86400
-      );
-      if (!matchedFeedback?.actualPrice) continue;
-
-      const actualChange = ((matchedFeedback.actualPrice - pred.currentPrice) / pred.currentPrice) * 100;
-      const actualDirection: 'bullish' | 'bearish' | 'neutral' =
-        actualChange > 1 ? 'bullish' : actualChange < -1 ? 'bearish' : 'neutral';
-      const symbol = pred.stock.replace('CRYPTO_', '');
-
-      trainingCases.push({
-        stockSymbol:     symbol,
-        sector:          SECTOR_MAP[symbol] || 'General',
-        date:            pred.createdAt || new Date(),
-        actualDirection,
-        actualReturn:    actualChange,
-      });
-    }
-
-    await storage.updateTrainingStatus(40, `Built ${trainingCases.length} training cases from real outcomes`, startTs);
-
-    if (trainingCases.length < 5) {
-      await storage.updateTrainingStatus(100, `Only ${trainingCases.length} matched cases — submit more feedback with actual prices to improve training`, startTs);
-      trainingInProgress = false;
-      return;
-    }
-
-    // Step 3: Run batch training through aiAstrologyTrainer
-    await storage.updateTrainingStatus(50, 'Running astrological pattern training...', startTs);
-    const result = await aiAstrologyTrainer.batchTrainOnHistoricalData(
-      trainingCases,
-      (progress) => {
-        const scaled = 50 + Math.floor(progress * 0.45);
-        storage.updateTrainingStatus(scaled, `Training: ${progress}% complete`, startTs);
-      }
-    );
-
-    await storage.updateTrainingStatus(98, 'Saving performance metrics...', startTs);
-    console.log(`[Training] Completed: ${result.successfulCases}/${result.totalCases} cases, accuracy: ${result.overallAccuracy.toFixed(1)}%`);
-    console.log(`[Training] Key learnings:`, result.keyLearnings.slice(0, 3));
-
-    const sectorSummary = Object.entries(result.sectorAccuracies)
-      .map(([s, a]) => `${s}: ${a.toFixed(0)}%`).join(', ');
-    await storage.updateTrainingStatus(100,
-      `Done — ${result.overallAccuracy.toFixed(1)}% accuracy on ${result.totalCases} cases. Sectors: ${sectorSummary || 'N/A'}`,
-      startTs
-    );
-  } catch (error) {
-    console.error('[Training] Error:', error);
-    await storage.updateTrainingStatus(0, `Training failed: ${error instanceof Error ? error.message : 'Unknown error'}`, startTs);
-  } finally {
-    trainingInProgress = false;
-  }
-}
 export function registerRoutes(app: Express): Server {
   setupAuth(app);
 
@@ -269,13 +196,12 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  // ── /api/predict ─────────────────────────────────────────────────────────
+  // ── /api/predict ──────────────────────────────────────────────────────────
   app.post('/api/predict', isAuthenticated, async (req: any, res) => {
     try {
       const { stock = 'TCS', when } = req.body;
       const userId = req.user.id;
 
-      // Subscription check
       const userSubscriptions = await storage.getUserSubscriptions(userId);
       const activeStockSubscription = userSubscriptions.find(
         sub => !sub.mode.includes('crypto') && new Date(sub.endTs * 1000) > new Date()
@@ -291,14 +217,12 @@ export function registerRoutes(app: Express): Server {
       const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
       const upperSymbol = stock.toUpperCase();
 
-      // Step 1: Fetch real-time quote — NSE first, then BSE
       let realTimeQuote = await stockDataService.getStockQuote(upperSymbol, 'NSE');
       if (!realTimeQuote) {
         console.log(`[Predict] NSE failed for ${upperSymbol}, trying BSE...`);
         realTimeQuote = await stockDataService.getStockQuote(upperSymbol, 'BSE');
       }
 
-      // Step 2: No live quote → return clear error, no fake data
       if (!realTimeQuote) {
         return res.status(503).json({
           message: `Live market data for "${upperSymbol}" is currently unavailable. Please verify the symbol is correct (e.g. RELIANCE, TCS, HDFCBANK) and try again.`,
@@ -310,19 +234,13 @@ export function registerRoutes(app: Express): Server {
       const currentPrice = realTimeQuote.adjustedPrice || realTimeQuote.lastPrice;
       const historicalData = await stockDataService.getHistoricalData(upperSymbol, 30);
 
-      // Step 3: Run AI + Astro prediction pipeline
       let enhancedPrediction: any = null;
       try {
-        enhancedPrediction = await aiService.generateEnhancedPrediction(
-          upperSymbol, currentPrice, userId, historicalData
-        );
+        enhancedPrediction = await aiService.generateEnhancedPrediction(upperSymbol, currentPrice, userId, historicalData);
       } catch (pipelineError) {
         console.error('[Predict] AI/Astro pipeline error:', pipelineError);
       }
 
-      // ── FIX: if pipeline returned null/undefined (e.g. OpenAI not configured
-      //         and combineAIAndAstroPredictions returned null), fall back to
-      //         a pure astrology prediction built directly on the REAL price.
       if (!enhancedPrediction || !enhancedPrediction.prediction) {
         console.log(`[Predict] Enhanced pipeline returned null for ${upperSymbol}, using astro-only fallback on real price ₹${currentPrice}`);
         try {
@@ -330,8 +248,7 @@ export function registerRoutes(app: Express): Server {
           const riskMultiplier = req.body.riskLevel === 'high' ? 0.04 : req.body.riskLevel === 'low' ? 0.015 : 0.025;
           enhancedPrediction = {
             prediction: {
-              direction: astroPred.direction,
-              confidence: astroPred.confidence,
+              direction: astroPred.direction, confidence: astroPred.confidence,
               priceTarget: {
                 low:  Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100,
                 high: Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100,
@@ -341,31 +258,15 @@ export function registerRoutes(app: Express): Server {
             finalDirection: astroPred.direction,
             astroRecommendation: astroPred.recommendation,
             warnings: astroPred.warnings,
-            analysis: {
-              technicalFactors: [],
-              marketSentiment: 'mixed',
-              keyRisks: astroPred.warnings,
-              recommendation: astroPred.recommendation,
-            },
+            analysis: { technicalFactors: [], marketSentiment: 'mixed', keyRisks: astroPred.warnings, recommendation: astroPred.recommendation },
             reasoning: 'Vedic astrology analysis (AI model not configured)',
             metadata: { aiEnabled: false, feedbackLearningApplied: false },
           };
         } catch (astroError) {
-          // Last resort — use real price with conservative ±2% band
           console.error('[Predict] Astro fallback also failed:', astroError);
           enhancedPrediction = {
-            prediction: {
-              direction: 'neutral',
-              confidence: 50,
-              priceTarget: {
-                low:  Math.round(currentPrice * 0.98 * 100) / 100,
-                high: Math.round(currentPrice * 1.02 * 100) / 100,
-              },
-            },
-            combinedConfidence: 50,
-            finalDirection: 'neutral',
-            astroRecommendation: 'Hold and observe',
-            warnings: [],
+            prediction: { direction: 'neutral', confidence: 50, priceTarget: { low: Math.round(currentPrice * 0.98 * 100) / 100, high: Math.round(currentPrice * 1.02 * 100) / 100 } },
+            combinedConfidence: 50, finalDirection: 'neutral', astroRecommendation: 'Hold and observe', warnings: [],
             analysis: { technicalFactors: [], marketSentiment: 'mixed', keyRisks: [], recommendation: 'Hold and observe' },
             reasoning: 'Conservative estimate based on real market price',
             metadata: { aiEnabled: false, feedbackLearningApplied: false },
@@ -377,9 +278,7 @@ export function registerRoutes(app: Express): Server {
       const showAstroDetails = isDevMode && req.user?.role === 'developer';
 
       const finalPrediction = {
-        stock: upperSymbol,
-        when: whenDate.toISOString(),
-        currentPrice,
+        stock: upperSymbol, when: whenDate.toISOString(), currentPrice,
         predLow:    enhancedPrediction.prediction?.priceTarget?.low  || Math.round(currentPrice * 0.98 * 100) / 100,
         predHigh:   enhancedPrediction.prediction?.priceTarget?.high || Math.round(currentPrice * 1.02 * 100) / 100,
         confidence: enhancedPrediction.combinedConfidence || enhancedPrediction.prediction?.confidence || 50,
@@ -390,7 +289,7 @@ export function registerRoutes(app: Express): Server {
         keyRisks:         enhancedPrediction.warnings || enhancedPrediction.analysis?.keyRisks || [],
         recommendation:   enhancedPrediction.astroRecommendation || enhancedPrediction.analysis?.recommendation || 'Hold and observe',
         reasoning:        enhancedPrediction.reasoning || 'Astrology-based analysis',
-       aiPowered:        enhancedPrediction.metadata?.aiEnabled || false,
+        aiPowered:        enhancedPrediction.metadata?.aiEnabled || false,
         livePriceAvailable: currentPrice > 0,
         feedbackEnhanced: enhancedPrediction.metadata?.feedbackLearningApplied || false,
         companyName:      realTimeQuote.companyName,
@@ -403,31 +302,21 @@ export function registerRoutes(app: Express): Server {
         }),
       };
 
-      // Save to DB
       await storage.createPrediction({
-        userId,
-        stock:        finalPrediction.stock,
-        currentPrice: finalPrediction.currentPrice,
-        predLow:      finalPrediction.predLow,
-        predHigh:     finalPrediction.predHigh,
-        confidence:   finalPrediction.confidence,
-        mode:         req.body.mode || 'ai-astro-combined',
-        riskLevel:    req.body.riskLevel || 'medium',
-        targetDate:   whenDate,
+        userId, stock: finalPrediction.stock, currentPrice: finalPrediction.currentPrice,
+        predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh,
+        confidence: finalPrediction.confidence, mode: req.body.mode || 'ai-astro-combined',
+        riskLevel: req.body.riskLevel || 'medium', targetDate: whenDate,
       });
 
       return res.json(finalPrediction);
-
     } catch (error) {
       console.error('Prediction error:', error);
-      return res.status(500).json({
-        message: "An error occurred while generating the prediction. Please try again.",
-        error: "PREDICTION_ERROR"
-      });
+      return res.status(500).json({ message: "An error occurred while generating the prediction. Please try again.", error: "PREDICTION_ERROR" });
     }
   });
 
-    app.post('/api/crypto/predict', isAuthenticated, async (req: any, res) => {
+  app.post('/api/crypto/predict', isAuthenticated, async (req: any, res) => {
     try {
       const { crypto: cryptoSymbol = 'BTC', when, mode = 'suggestion', riskLevel = 'high' } = req.body;
       const userId = req.user.id;
@@ -438,29 +327,21 @@ export function registerRoutes(app: Express): Server {
       const historicalData = await cryptoDataService.getCryptoHistoricalData(cryptoSymbol.toUpperCase(), 30);
       const enhancedPrediction = await aiService.generateEnhancedCryptoPrediction(cryptoSymbol.toUpperCase(), currentPrice, userId, historicalData, cryptoQuote);
       const finalPrediction = {
-        crypto: cryptoSymbol.toUpperCase(),
-        name: cryptoQuote.name,
-        when: whenDate.toISOString(),
-        currentPrice,
+        crypto: cryptoSymbol.toUpperCase(), name: cryptoQuote.name, when: whenDate.toISOString(), currentPrice,
         predLow:    enhancedPrediction.prediction?.priceTarget?.low  || currentPrice * 0.92,
         predHigh:   enhancedPrediction.prediction?.priceTarget?.high || currentPrice * 1.08,
         confidence: enhancedPrediction.combinedConfidence || 65,
-        direction:  enhancedPrediction.finalDirection || 'neutral',
-        volatility: 'high',
+        direction:  enhancedPrediction.finalDirection || 'neutral', volatility: 'high',
         technicalFactors: enhancedPrediction.analysis?.technicalFactors || [],
-        marketSentiment:  enhancedPrediction.analysis?.marketSentiment || 'mixed',
+        marketSentiment:  enhancedPrediction.analysis?.marketSentiment  || 'mixed',
         keyRisks:         enhancedPrediction.warnings || [],
         recommendation:   enhancedPrediction.astroRecommendation || 'Hold and observe',
         reasoning:        enhancedPrediction.reasoning || 'Astrology-based crypto analysis',
-        marketCap:  cryptoQuote.marketCap,
-        volume24h:  cryptoQuote.volume24h,
-        change24h:  cryptoQuote.changePercent24h,
-        aiPowered:  enhancedPrediction.metadata?.aiEnabled || false,
-        livePriceAvailable: currentPrice > 0,
+        marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h,
+        aiPowered: enhancedPrediction.metadata?.aiEnabled || false, livePriceAvailable: currentPrice > 0,
       };
       await storage.createPrediction({
-        userId, stock: `CRYPTO_${finalPrediction.crypto}`,
-        currentPrice: finalPrediction.currentPrice,
+        userId, stock: `CRYPTO_${finalPrediction.crypto}`, currentPrice: finalPrediction.currentPrice,
         predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh,
         confidence: finalPrediction.confidence, mode, riskLevel, targetDate: whenDate,
       });
@@ -562,41 +443,27 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-    app.post('/api/feedback', isAuthenticated, async (req: any, res) => {
+  // ── /api/feedback — with predictionId accuracy tracking ──────────────────
+  app.post('/api/feedback', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.id;
-      const {
-        stock = 'UNKNOWN',
-        when = '',
-        actualPrice,
-        useful = 'yes',
-        predictionId,
-        actualDirection = 'neutral',
-      } = req.body;
+      const { stock = 'UNKNOWN', when = '', actualPrice, useful = 'yes', predictionId, actualDirection = 'neutral' } = req.body;
 
       const wasUseful = useful === 'yes' || useful === 'true' || useful === true;
       const parsedPrice = actualPrice ? parseFloat(actualPrice) : null;
 
-      // If predictionId is provided, use the full learning service for real accuracy tracking
       if (predictionId && parsedPrice) {
         await feedbackLearningService.recordFeedback(
-          userId,
-          parseInt(predictionId),
-          parsedPrice,
-          actualDirection as 'up' | 'down' | 'neutral',
-          wasUseful
+          userId, parseInt(predictionId), parsedPrice,
+          actualDirection as 'up' | 'down' | 'neutral', wasUseful
         );
         res.json({ status: 'ok', message: 'Feedback recorded with accuracy tracking' });
         return;
       }
 
-      // Fallback: basic feedback without a predictionId
       await storage.createFeedback({
-        userId,
-        stock,
-        requestedTime: when,
-        actualPrice: parsedPrice,
-        useful: wasUseful ? 1 : 0,
+        userId, stock, requestedTime: when,
+        actualPrice: parsedPrice, useful: wasUseful ? 1 : 0,
         submittedAt: Math.floor(Date.now() / 1000),
       });
       res.json({ status: 'ok' });
@@ -605,6 +472,8 @@ export function registerRoutes(app: Express): Server {
       res.status(500).json({ message: "Error submitting feedback" });
     }
   });
+
+  // ── Training endpoints ────────────────────────────────────────────────────
   app.post('/api/training/start', async (req, res) => {
     if (trainingInProgress) return res.json({ status: 'running' });
     runRealTraining();
@@ -936,8 +805,7 @@ export function registerRoutes(app: Express): Server {
       const { firstName, lastName, email, profileImageUrl } = req.body;
       const [updated] = await db.update(users)
         .set({ firstName: firstName || null, lastName: lastName || null, email: email || null, profileImageUrl: profileImageUrl || null, updatedAt: new Date() })
-        .where(eq(users.id, userId))
-        .returning();
+        .where(eq(users.id, userId)).returning();
       if (!updated) return res.status(404).json({ message: "User not found" });
       const { password: _, ...u } = updated;
       res.json(u);
@@ -973,10 +841,8 @@ export function registerRoutes(app: Express): Server {
     try {
       const userId = req.user.id;
       const [allPredictions, allSubscriptions, allFeedback, allWatchlist] = await Promise.all([
-        storage.getUserPredictions(userId),
-        storage.getUserSubscriptions(userId),
-        storage.getUserFeedback(userId),
-        storage.getUserWatchlist(userId),
+        storage.getUserPredictions(userId), storage.getUserSubscriptions(userId),
+        storage.getUserFeedback(userId), storage.getUserWatchlist(userId),
       ]);
       const { password: _pw, ...userWithoutPassword } = req.user;
       res.setHeader('Content-Disposition', `attachment; filename="bullwiser-${new Date().toISOString().split('T')[0]}.json"`);
@@ -997,15 +863,9 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.post('/api/notifications/subscribe', isAuthenticated, async (req: any, res) => {
-    res.json({ status: 'success', message: 'Subscription stored' });
-  });
-  app.post('/api/notifications/unsubscribe', isAuthenticated, async (req: any, res) => {
-    res.json({ status: 'success', message: 'Unsubscribed' });
-  });
-  app.post('/api/notifications/test', isAuthenticated, async (req: any, res) => {
-    res.json({ status: 'success', message: 'Test notification sent' });
-  });
+  app.post('/api/notifications/subscribe',   isAuthenticated, async (req: any, res) => { res.json({ status: 'success', message: 'Subscription stored' }); });
+  app.post('/api/notifications/unsubscribe',  isAuthenticated, async (req: any, res) => { res.json({ status: 'success', message: 'Unsubscribed' }); });
+  app.post('/api/notifications/test',         isAuthenticated, async (req: any, res) => { res.json({ status: 'success', message: 'Test notification sent' }); });
 
   const httpServer = createServer(app);
   return httpServer;
