@@ -122,22 +122,27 @@ export class AIService {
     symbol: string,
     currentPrice: number,
     userId?: string,
-    historicalData?: any[]
+    historicalData?: any[],
+    targetDate?: Date        // ← ADDED: the user-selected prediction horizon date
   ): Promise<any> {
+    // Use the target date for all astrology calculations so each horizon
+    // (1 day / 1 week / 1 month / 3 months) produces distinct planetary data.
+    const predDate = targetDate || new Date();
+
     try {
       // Step 1: Feedback learning adjustments
       const learningAdjustment = userId
         ? await feedbackLearningService.getLearningAdjustments(symbol, userId)
         : await feedbackLearningService.getLearningAdjustments(symbol);
 
-      // Step 2: Gemini AI analysis
+      // Step 2: Gemini AI analysis (always uses live market data — no date change needed)
       let aiPrediction: AIAnalysisResult | null = null;
       if (this.isConfigured()) {
         aiPrediction = await this.analyzeStock(symbol, currentPrice, historicalData);
       }
 
-      // Step 3: Basic Vedic astrology (Hora, Tithi, Nakshatra, Muhurat, Rahu Kalam)
-      const astroPrediction = await astrologyService.generateAstroPrediction(symbol, new Date(), currentPrice);
+      // Step 3: Basic Vedic astrology — use predDate so future horizons differ
+      const astroPrediction = await astrologyService.generateAstroPrediction(symbol, predDate, currentPrice);
 
       // Step 4: Advanced astrology ────────────────────────────────────────────
       const sector = getSectorForSymbol(symbol);
@@ -147,12 +152,12 @@ export class AIService {
       let d10Analysis: any = null;
 
       try {
-        // 4a. Sector planetary analysis
-        advancedAstroResult = await advancedAstrologyService.analyzeStockBySector(symbol, sector, new Date());
+        // 4a. Sector planetary analysis for the target date
+        advancedAstroResult = await advancedAstrologyService.analyzeStockBySector(symbol, sector, predDate);
         console.log(`[AdvAstro] ${symbol} (${sector}): timing=${advancedAstroResult?.timing}, sectorStrength=${advancedAstroResult?.sectorStrength}`);
 
-        // 4b. D-10 Dashamsa chart
-        const d1Chart = advancedAstrologyService.generateD1Chart(new Date(), '09:15', 19.0760, 72.8777);
+        // 4b. D-10 Dashamsa chart for the target date
+        const d1Chart = advancedAstrologyService.generateD1Chart(predDate, '09:15', 19.0760, 72.8777);
         d10Analysis   = advancedAstrologyService.generateD10Chart(d1Chart);
 
         // 4c. Yoga analysis from D-10 career chart
@@ -165,8 +170,8 @@ export class AIService {
         }, 0);
         yogaBonus = Math.max(-20, Math.min(20, Math.round(yogaBonus)));
 
-        // 4d. Planetary transits
-        const transits     = advancedAstrologyService.calculateTransits(d1Chart, new Date());
+        // 4d. Planetary transits for the target date
+        const transits     = advancedAstrologyService.calculateTransits(d1Chart, predDate);
         const beneficCount = transits.filter((t: any) => t.effect === 'beneficial').length;
         const maleficCount = transits.filter((t: any) => t.effect === 'malefic').length;
         transitImpact      = Math.max(-15, Math.min(15, (beneficCount - maleficCount) * 3));
@@ -265,6 +270,7 @@ export class AIService {
         d10Enabled:           !!d10Analysis,
         feedbackLearningApplied: true,
         predictionTime:       new Date().toISOString(),
+        targetDate:           predDate.toISOString(),
         sector,
         sources: {
           ai:        aiPrediction ? 'Google Gemini 1.5 Flash' : 'Not available',
@@ -279,7 +285,7 @@ export class AIService {
       return combinedPrediction;
     } catch (error) {
       console.error('Error generating enhanced prediction:', error);
-      const fallbackAstro = await astrologyService.generateAstroPrediction(symbol, new Date(), currentPrice);
+      const fallbackAstro = await astrologyService.generateAstroPrediction(symbol, predDate, currentPrice);
       return astrologyService.combineAIAndAstroPredictions(null, fallbackAstro, 0, currentPrice);
     }
   }
