@@ -236,7 +236,7 @@ export function registerRoutes(app: Express): Server {
 
       let enhancedPrediction: any = null;
       try {
-        enhancedPrediction = await aiService.generateEnhancedPrediction(upperSymbol, currentPrice, userId, historicalData);
+       enhancedPrediction = await aiService.generateEnhancedPrediction(upperSymbol, currentPrice, userId, historicalData, whenDate);
       } catch (pipelineError) {
         console.error('[Predict] AI/Astro pipeline error:', pipelineError);
       }
