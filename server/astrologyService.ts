@@ -84,7 +84,7 @@ async function getProkeralaToken(): Promise<string | null> {
 // Key format: "<endpoint>|<datetime>|<coordinates>"
 // Each of the 4 endpoints (panchang, planet-position, hora, inauspicious-period)
 // gets its own cache entry so identical calls within 1 minute skip the API call.
-const PROKERALA_CACHE_TTL = 60 * 1000; // 1 minute in milliseconds
+const PROKERALA_CACHE_TTL = 5 * 60 * 1000; // 1 minute in milliseconds
 const prokeralaCache = new Map<string, { data: any; cachedAt: number }>();
 
 function makeProkeralaCacheKey(endpoint: string, params: Record<string, string>): string {
