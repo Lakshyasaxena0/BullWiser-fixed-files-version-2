@@ -1,0 +1,585 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// statisticalAnalysisService.ts
+// Fetches 200-day OHLCV from Yahoo Finance and computes technical indicators.
+// Produces a 0–100 statisticalScore used in the 50/50 astro+stats blend.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface OHLCVCandle {
+  date: Date;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface IndicatorResult {
+  value: number | null;       // null = not enough data to compute
+  signal?: 'bullish' | 'bearish' | 'neutral';
+}
+
+export interface StatisticalAnalysis {
+  symbol: string;
+  computedAt: Date;
+  candlesUsed: number;
+  dataSource: 'yahoo' | 'provided' | 'insufficient';
+
+  indicators: {
+    rsi14:          IndicatorResult;   // 0–100; >70 overbought, <30 oversold
+    macd:           IndicatorResult;   // MACD line − signal line; >0 bullish
+    bollingerBand:  IndicatorResult;   // % position within band; >1 above, <0 below
+    sma20:          IndicatorResult;   // price vs SMA-20; >0 bullish %
+    sma50:          IndicatorResult;   // price vs SMA-50; >0 bullish %
+    sma200:         IndicatorResult;   // price vs SMA-200; >0 bullish %
+    atr14:          IndicatorResult;   // volatility % of price
+    obv:            IndicatorResult;   // OBV trend; >0 bullish, <0 bearish
+    supportResist:  IndicatorResult;   // price position: 0=at support, 100=at resist
+    ema12vs26:      IndicatorResult;   // EMA-12 vs EMA-26 crossover signal
+  };
+
+  statisticalScore: number;           // 0–100 composite (50 = neutral)
+  direction: 'bullish' | 'bearish' | 'neutral';
+  confidence: number;                 // 0–100
+  keyFindings: string[];              // human-readable signal summary
+  warnings: string[];                 // e.g. overbought, high volatility
+}
+
+export interface CombinedScoreResult {
+  finalDirection: 'bullish' | 'bearish' | 'neutral';
+  finalConfidence: number;
+  statisticalScore: number;
+  astroScore: number;
+  conflicting: boolean;               // true when stat & astro directions differ
+  blendNote: string;
+}
+
+// ── Yahoo Finance symbol mapping ───────────────────────────────────────────────
+
+const NSE_SYMBOLS = new Set([
+  'TCS','INFY','WIPRO','HCLTECH','TECHM','HDFCBANK','ICICIBANK','SBIN','AXISBANK',
+  'KOTAKBANK','PNB','BANKBARODA','INDUSINDBK','YESBANK','CANBK','IDBI','SUNPHARMA',
+  'DRREDDY','CIPLA','DIVISLAB','APOLLOHOSP','ONGC','BPCL','IOC','POWERGRID','NTPC',
+  'ADANIGREEN','RELIANCE','MARUTI','TATAMOTORS','HEROMOTOCO','EICHERMOT','BAJAJFINSV',
+  'HINDUNILVR','ITC','NESTLEIND','BRITANNIA','TITAN','ASIANPAINT','DMART','ZOMATO',
+  'IRCTC','NYKAA','TATASTEEL','JSWSTEEL','HINDALCO','VEDL','COALINDIA','ULTRACEMCO',
+  'GRASIM','SHREECEM','LT','ADANIENT','ADANIPORTS','BHARTIARTL','PAYTM','BAJFINANCE',
+]);
+
+const CRYPTO_YAHOO_MAP: Record<string, string> = {
+  BTC: 'BTC-USD', ETH: 'ETH-USD', BNB: 'BNB-USD', ADA: 'ADA-USD',
+  SOL: 'SOL-USD', XRP: 'XRP-USD', DOT: 'DOT-USD', MATIC: 'MATIC-USD',
+  AVAX: 'AVAX-USD', ATOM: 'ATOM-USD', DOGE: 'DOGE-USD', SHIB: 'SHIB-USD',
+  LTC: 'LTC-USD', LINK: 'LINK-USD', UNI: 'UNI-USD', TRX: 'TRX-USD',
+};
+
+function toYahooSymbol(symbol: string, isCrypto = false): string {
+  const upper = symbol.toUpperCase();
+  if (isCrypto) return CRYPTO_YAHOO_MAP[upper] || `${upper}-USD`;
+  if (NSE_SYMBOLS.has(upper)) return `${upper}.NS`;
+  // Fall back to BSE for unknown Indian symbols
+  return `${upper}.BO`;
+}
+
+// ── Yahoo Finance OHLCV fetcher ───────────────────────────────────────────────
+// Uses the v8 chart endpoint — no API key required.
+
+export async function fetchYahooHistorical(
+  symbol: string,
+  days = 200,
+  isCrypto = false
+): Promise<OHLCVCandle[]> {
+  const yahooSym = toYahooSymbol(symbol, isCrypto);
+  const period2  = Math.floor(Date.now() / 1000);
+  const period1  = period2 - days * 24 * 60 * 60;
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}` +
+    `?period1=${period1}&period2=${period2}&interval=1d&includeAdjustedClose=true`;
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        Accept: 'application/json',
+      },
+    });
+    if (!res.ok) {
+      console.warn(`[StatSvc] Yahoo fetch failed for ${yahooSym}: ${res.status}`);
+      return [];
+    }
+    const json   = await res.json();
+    const result = json?.chart?.result?.[0];
+    if (!result) return [];
+
+    const timestamps: number[]   = result.timestamp || [];
+    const quote                  = result.indicators?.quote?.[0] || {};
+    const opens:   number[]      = quote.open   || [];
+    const highs:   number[]      = quote.high   || [];
+    const lows:    number[]      = quote.low    || [];
+    const closes:  number[]      = quote.close  || [];
+    const volumes: number[]      = quote.volume || [];
+
+    const candles: OHLCVCandle[] = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      if (closes[i] == null) continue;          // skip null candles
+      candles.push({
+        date:   new Date(timestamps[i] * 1000),
+        open:   opens[i]   ?? closes[i],
+        high:   highs[i]   ?? closes[i],
+        low:    lows[i]    ?? closes[i],
+        close:  closes[i],
+        volume: volumes[i] ?? 0,
+      });
+    }
+    console.log(`[StatSvc] Fetched ${candles.length} candles for ${yahooSym}`);
+    return candles;
+  } catch (err) {
+    console.error(`[StatSvc] Yahoo fetch error for ${yahooSym}:`, err);
+    return [];
+  }
+}
+
+// ── Pure math helpers ─────────────────────────────────────────────────────────
+
+function closes(candles: OHLCVCandle[]): number[] {
+  return candles.map(c => c.close);
+}
+
+/** Simple Moving Average */
+function sma(data: number[], period: number): number | null {
+  if (data.length < period) return null;
+  const slice = data.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+/** Exponential Moving Average — returns full array aligned with data */
+function emaArray(data: number[], period: number): number[] {
+  if (data.length < period) return [];
+  const k      = 2 / (period + 1);
+  const result: number[] = [];
+  // seed with SMA of first `period` values
+  let prev = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  result.push(prev);
+  for (let i = period; i < data.length; i++) {
+    prev = data[i] * k + prev * (1 - k);
+    result.push(prev);
+  }
+  return result;
+}
+
+/** RSI — Wilder's smoothing */
+function rsi(data: number[], period = 14): number | null {
+  if (data.length < period + 1) return null;
+  const slice = data.slice(-( period + 1));
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = slice[i] - slice[i - 1];
+    if (diff >= 0) gains  += diff;
+    else           losses -= diff;
+  }
+  const avgGain = gains  / period;
+  const avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+/** MACD: returns { macdLine, signalLine, histogram } */
+function macd(data: number[], fast = 12, slow = 26, signal = 9): { macdLine: number; signalLine: number; histogram: number } | null {
+  if (data.length < slow + signal) return null;
+  const ema12arr = emaArray(data, fast);
+  const ema26arr = emaArray(data, slow);
+
+  // Align: ema12arr starts at index (fast-1), ema26arr at (slow-1)
+  // The overlap starts at index (slow - fast) within ema12arr
+  const offset     = slow - fast;
+  const macdLine   = ema12arr.slice(offset).map((v, i) => v - ema26arr[i]);
+  const signalArr  = emaArray(macdLine, signal);
+  if (!signalArr.length) return null;
+
+  const lastMacd   = macdLine[macdLine.length - 1];
+  const lastSignal = signalArr[signalArr.length - 1];
+  return { macdLine: lastMacd, signalLine: lastSignal, histogram: lastMacd - lastSignal };
+}
+
+/** Bollinger Bands — returns { upper, middle, lower, pctB } */
+function bollingerBands(data: number[], period = 20, stdDevMult = 2): { upper: number; middle: number; lower: number; pctB: number } | null {
+  if (data.length < period) return null;
+  const slice  = data.slice(-period);
+  const mid    = slice.reduce((a, b) => a + b, 0) / period;
+  const variance = slice.reduce((a, b) => a + (b - mid) ** 2, 0) / period;
+  const sd     = Math.sqrt(variance);
+  const upper  = mid + stdDevMult * sd;
+  const lower  = mid - stdDevMult * sd;
+  const last   = data[data.length - 1];
+  const pctB   = sd === 0 ? 0.5 : (last - lower) / (upper - lower); // 0=at lower, 1=at upper
+  return { upper, middle: mid, lower, pctB };
+}
+
+/** ATR — Average True Range */
+function atr(candles: OHLCVCandle[], period = 14): number | null {
+  if (candles.length < period + 1) return null;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const { high, low } = candles[i];
+    const prevClose     = candles[i - 1].close;
+    trs.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+  }
+  return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+/** On-Balance Volume trend: positive = buying pressure */
+function obvTrend(candles: OHLCVCandle[]): number | null {
+  if (candles.length < 5) return null;
+  let obv = 0;
+  const obvSeries: number[] = [0];
+  for (let i = 1; i < candles.length; i++) {
+    if      (candles[i].close > candles[i - 1].close) obv += candles[i].volume;
+    else if (candles[i].close < candles[i - 1].close) obv -= candles[i].volume;
+    obvSeries.push(obv);
+  }
+  // Return slope over last 20 candles (or all if fewer)
+  const window = Math.min(20, obvSeries.length);
+  return obvSeries[obvSeries.length - 1] - obvSeries[obvSeries.length - window];
+}
+
+/** Support/Resistance: % position between recent swing low and swing high */
+function supportResistancePosition(candles: OHLCVCandle[], lookback = 20): number | null {
+  if (candles.length < lookback) return null;
+  const slice = candles.slice(-lookback);
+  const low   = Math.min(...slice.map(c => c.low));
+  const high  = Math.max(...slice.map(c => c.high));
+  const last  = candles[candles.length - 1].close;
+  if (high === low) return 50;
+  return ((last - low) / (high - low)) * 100; // 0=at support, 100=at resistance
+}
+
+// ── Scoring helpers ───────────────────────────────────────────────────────────
+
+function toSignal(v: number | null, bullishAbove: number, bearishBelow: number): 'bullish' | 'bearish' | 'neutral' {
+  if (v === null) return 'neutral';
+  if (v > bullishAbove) return 'bullish';
+  if (v < bearishBelow) return 'bearish';
+  return 'neutral';
+}
+
+/** Convert a raw indicator value to a 0–100 contribution score */
+function indicatorToScore(ind: IndicatorResult, weight: number, invertedIsBullish = false): number {
+  if (ind.value === null) return 50 * weight; // neutral if no data
+  const sig = ind.signal || 'neutral';
+  const base = sig === 'bullish' ? 75
+             : sig === 'bearish' ? 25
+             : 50;
+  return base * weight;
+}
+
+// ── Main service class ────────────────────────────────────────────────────────
+
+export class StatisticalAnalysisService {
+
+  /**
+   * Full statistical analysis pipeline.
+   * @param symbol  Ticker symbol (e.g. "TCS", "BTC")
+   * @param isCrypto  Set true for crypto symbols
+   * @param providedCandles  Optional pre-fetched candles (skips Yahoo fetch)
+   */
+  async analyze(
+    symbol: string,
+    isCrypto = false,
+    providedCandles?: OHLCVCandle[]
+  ): Promise<StatisticalAnalysis> {
+    // ── 1. Get candles ────────────────────────────────────────────────────────
+    let candles: OHLCVCandle[] = providedCandles?.length
+      ? providedCandles
+      : await fetchYahooHistorical(symbol, 200, isCrypto);
+
+    const dataSource: StatisticalAnalysis['dataSource'] =
+      providedCandles?.length ? 'provided'
+      : candles.length        ? 'yahoo'
+      : 'insufficient';
+
+    // Fallback: return a neutral analysis if we have no data at all
+    if (candles.length < 5) {
+      return this.neutralFallback(symbol, dataSource);
+    }
+
+    const cl   = closes(candles);
+    const last = cl[cl.length - 1];
+
+    // ── 2. Compute indicators ─────────────────────────────────────────────────
+
+    // RSI-14
+    const rsiVal = rsi(cl, 14);
+    const rsi14: IndicatorResult = {
+      value:  rsiVal,
+      signal: rsiVal === null ? 'neutral'
+            : rsiVal < 30    ? 'bullish'   // oversold → expect bounce
+            : rsiVal > 70    ? 'bearish'   // overbought → expect pullback
+            : 'neutral',
+    };
+
+    // MACD
+    const macdResult = macd(cl);
+    const macdInd: IndicatorResult = {
+      value:  macdResult?.histogram ?? null,
+      signal: macdResult === null          ? 'neutral'
+            : macdResult.histogram > 0    ? 'bullish'
+            : macdResult.histogram < 0    ? 'bearish'
+            : 'neutral',
+    };
+
+    // Bollinger Band
+    const bb = bollingerBands(cl);
+    const bollingerBand: IndicatorResult = {
+      value:  bb?.pctB ?? null,
+      signal: bb === null       ? 'neutral'
+            : bb.pctB < 0.2    ? 'bullish'   // near lower band → oversold
+            : bb.pctB > 0.8    ? 'bearish'   // near upper band → overbought
+            : 'neutral',
+    };
+
+    // SMA-20
+    const sma20val = sma(cl, 20);
+    const sma20pct = sma20val ? ((last - sma20val) / sma20val) * 100 : null;
+    const sma20: IndicatorResult = {
+      value:  sma20pct,
+      signal: sma20pct === null ? 'neutral' : sma20pct > 0 ? 'bullish' : 'bearish',
+    };
+
+    // SMA-50
+    const sma50val = sma(cl, 50);
+    const sma50pct = sma50val ? ((last - sma50val) / sma50val) * 100 : null;
+    const sma50: IndicatorResult = {
+      value:  sma50pct,
+      signal: sma50pct === null ? 'neutral' : sma50pct > 0 ? 'bullish' : 'bearish',
+    };
+
+    // SMA-200
+    const sma200val = sma(cl, 200);
+    const sma200pct = sma200val ? ((last - sma200val) / sma200val) * 100 : null;
+    const sma200: IndicatorResult = {
+      value:  sma200pct,
+      signal: sma200pct === null ? 'neutral' : sma200pct > 0 ? 'bullish' : 'bearish',
+    };
+
+    // ATR-14 (as % of price → volatility metric, not directional)
+    const atrVal  = atr(candles, 14);
+    const atrPct  = atrVal && last ? (atrVal / last) * 100 : null;
+    const atr14: IndicatorResult = {
+      value:  atrPct,
+      signal: 'neutral',  // ATR is volatility, not directional by itself
+    };
+
+    // OBV trend
+    const obvVal = obvTrend(candles);
+    const obv: IndicatorResult = {
+      value:  obvVal,
+      signal: obvVal === null ? 'neutral' : obvVal > 0 ? 'bullish' : 'bearish',
+    };
+
+    // Support/Resistance position
+    const srVal = supportResistancePosition(candles);
+    const supportResist: IndicatorResult = {
+      value:  srVal,
+      // Near support (0–25) → bullish potential; near resistance (75–100) → bearish
+      signal: srVal === null ? 'neutral'
+            : srVal < 25    ? 'bullish'
+            : srVal > 75    ? 'bearish'
+            : 'neutral',
+    };
+
+    // EMA-12 vs EMA-26 crossover
+    const ema12arr = emaArray(cl, 12);
+    const ema26arr = emaArray(cl, 26);
+    let ema12vs26: IndicatorResult = { value: null, signal: 'neutral' };
+    if (ema12arr.length && ema26arr.length) {
+      // Align: ema26arr is shorter; take last values
+      const e12 = ema12arr[ema12arr.length - 1];
+      const e26 = ema26arr[ema26arr.length - 1];
+      const diff = ((e12 - e26) / e26) * 100;
+      ema12vs26 = {
+        value:  diff,
+        signal: diff > 0 ? 'bullish' : diff < 0 ? 'bearish' : 'neutral',
+      };
+    }
+
+    // ── 3. Composite score ────────────────────────────────────────────────────
+    // Weights must sum to 1.0
+    const weights = {
+      rsi14:         0.15,
+      macd:          0.15,
+      bollingerBand: 0.10,
+      sma20:         0.10,
+      sma50:         0.12,
+      sma200:        0.10,
+      obv:           0.10,
+      supportResist: 0.10,
+      ema12vs26:     0.08,
+    };
+
+    const rawScore =
+      indicatorToScore(rsi14,         weights.rsi14)         +
+      indicatorToScore(macdInd,       weights.macd)          +
+      indicatorToScore(bollingerBand, weights.bollingerBand) +
+      indicatorToScore(sma20,         weights.sma20)         +
+      indicatorToScore(sma50,         weights.sma50)         +
+      indicatorToScore(sma200,        weights.sma200)        +
+      indicatorToScore(obv,           weights.obv)           +
+      indicatorToScore(supportResist, weights.supportResist) +
+      indicatorToScore(ema12vs26,     weights.ema12vs26);
+
+    const statisticalScore = Math.round(Math.max(0, Math.min(100, rawScore)));
+
+    // ── 4. Direction & confidence ─────────────────────────────────────────────
+    const direction: 'bullish' | 'bearish' | 'neutral' =
+      statisticalScore >= 60 ? 'bullish'
+      : statisticalScore <= 40 ? 'bearish'
+      : 'neutral';
+
+    // Confidence: how far from 50 the score is, scaled to 40–90 range
+    const rawConf = Math.abs(statisticalScore - 50) * 2; // 0–100
+    const confidence = Math.round(Math.min(90, Math.max(40, rawConf + 40)));
+
+    // ── 5. Human-readable findings ────────────────────────────────────────────
+    const keyFindings: string[] = [];
+    const warnings:    string[] = [];
+
+    if (rsiVal !== null) {
+      if      (rsiVal < 30) keyFindings.push(`RSI ${rsiVal.toFixed(1)} — oversold, potential bounce`);
+      else if (rsiVal > 70) warnings.push(`RSI ${rsiVal.toFixed(1)} — overbought territory`);
+      else                   keyFindings.push(`RSI ${rsiVal.toFixed(1)} — neutral momentum`);
+    }
+    if (macdResult) {
+      const hist = macdResult.histogram;
+      keyFindings.push(
+        hist > 0
+          ? `MACD histogram positive (+${hist.toFixed(2)}) — bullish momentum`
+          : `MACD histogram negative (${hist.toFixed(2)}) — bearish momentum`
+      );
+    }
+    if (sma20pct !== null) {
+      keyFindings.push(
+        `Price ${sma20pct > 0 ? 'above' : 'below'} SMA-20 by ${Math.abs(sma20pct).toFixed(1)}%`
+      );
+    }
+    if (sma50pct !== null) {
+      keyFindings.push(
+        `Price ${sma50pct > 0 ? 'above' : 'below'} SMA-50 by ${Math.abs(sma50pct).toFixed(1)}%`
+      );
+    }
+    if (sma200pct !== null) {
+      keyFindings.push(
+        sma200pct > 0
+          ? `Above SMA-200 — long-term bullish trend intact`
+          : `Below SMA-200 — long-term downtrend`
+      );
+    }
+    if (bb) {
+      if      (bb.pctB < 0.1) keyFindings.push('Price near lower Bollinger Band — potential reversal zone');
+      else if (bb.pctB > 0.9) warnings.push('Price near upper Bollinger Band — overextended');
+    }
+    if (atrPct !== null && atrPct > 3) {
+      warnings.push(`High volatility: ATR is ${atrPct.toFixed(1)}% of price`);
+    }
+    if (obvVal !== null) {
+      keyFindings.push(obvVal > 0 ? 'OBV rising — buying pressure confirmed' : 'OBV falling — distribution phase');
+    }
+    if (ema12vs26.value !== null) {
+      keyFindings.push(
+        ema12vs26.value > 0
+          ? `EMA-12 above EMA-26 (+${ema12vs26.value.toFixed(2)}%) — short-term momentum bullish`
+          : `EMA-12 below EMA-26 (${ema12vs26.value.toFixed(2)}%) — short-term momentum bearish`
+      );
+    }
+
+    return {
+      symbol,
+      computedAt:   new Date(),
+      candlesUsed:  candles.length,
+      dataSource,
+      indicators: {
+        rsi14, macd: macdInd, bollingerBand, sma20, sma50, sma200,
+        atr14, obv, supportResist, ema12vs26,
+      },
+      statisticalScore,
+      direction,
+      confidence,
+      keyFindings: keyFindings.slice(0, 6),  // cap at 6 for UI
+      warnings,
+    };
+  }
+
+  // ── 50/50 Blend: Statistical + Astro ─────────────────────────────────────────
+  /**
+   * Blends a statistical analysis with an astrology score (0–100) into a
+   * single final prediction. Stats wins on direction conflict.
+   *
+   * @param statAnalysis  Result of analyze()
+   * @param astroScore    0–100 composite score from astrologyService
+   * @param astroDirection  Direction signal from astrologyService
+   */
+  blendWithAstro(
+    statAnalysis: StatisticalAnalysis,
+    astroScore: number,
+    astroDirection: 'bullish' | 'bearish' | 'neutral'
+  ): CombinedScoreResult {
+    const statScore = statAnalysis.statisticalScore;
+    const statDir   = statAnalysis.direction;
+
+    // 50/50 blended score
+    const blendedScore = Math.round((statScore * 0.5) + (astroScore * 0.5));
+
+    const conflicting = statDir !== 'neutral' && astroDirection !== 'neutral' && statDir !== astroDirection;
+
+    // Direction: stats wins tiebreak
+    let finalDirection: 'bullish' | 'bearish' | 'neutral';
+    if (!conflicting) {
+      // Agreement or one is neutral → use blended score
+      finalDirection = blendedScore >= 60 ? 'bullish'
+                     : blendedScore <= 40 ? 'bearish'
+                     : 'neutral';
+    } else {
+      // Conflict → stats wins, but we note the disagreement
+      finalDirection = statDir;
+    }
+
+    // Confidence: penalise conflict (-15), reward agreement (+10)
+    const baseConf  = Math.min(90, Math.max(30, Math.abs(blendedScore - 50) * 2 + 40));
+    const confAdj   = conflicting ? -15 : statDir === astroDirection ? +10 : 0;
+    const finalConfidence = Math.round(Math.min(92, Math.max(30, baseConf + confAdj)));
+
+    const blendNote = conflicting
+      ? `Conflict: stats=${statDir}, astro=${astroDirection} — stats takes precedence (confidence reduced)`
+      : `Agreement: both signals ${finalDirection} — confidence boosted`;
+
+    return {
+      finalDirection,
+      finalConfidence,
+      statisticalScore: statScore,
+      astroScore,
+      conflicting,
+      blendNote,
+    };
+  }
+
+  // ── Fallback for insufficient data ────────────────────────────────────────────
+  private neutralFallback(symbol: string, dataSource: StatisticalAnalysis['dataSource']): StatisticalAnalysis {
+    const neutral: IndicatorResult = { value: null, signal: 'neutral' };
+    return {
+      symbol, computedAt: new Date(), candlesUsed: 0, dataSource,
+      indicators: {
+        rsi14: neutral, macd: neutral, bollingerBand: neutral,
+        sma20: neutral, sma50: neutral, sma200: neutral,
+        atr14: neutral, obv: neutral, supportResist: neutral, ema12vs26: neutral,
+      },
+      statisticalScore: 50,
+      direction: 'neutral',
+      confidence: 40,
+      keyFindings: ['Insufficient historical data for statistical analysis'],
+      warnings:    ['Statistical component unavailable — prediction relies on astrology only'],
+    };
+  }
+}
+
+export const statisticalAnalysisService = new StatisticalAnalysisService();
