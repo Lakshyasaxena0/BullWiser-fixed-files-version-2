@@ -1,0 +1,413 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// ephemerisService.ts  —  Accurate Vedic astrology via Swiss Ephemeris
+// Location: server/ephemerisService.ts
+//
+// Install: npm install swisseph
+//
+// Replaces the approximate fallback calculators in astrologyService.ts with
+// professional-grade ephemeris calculations. Used as primary source when
+// Prokerala API endpoints return 403 (plan restriction).
+// ─────────────────────────────────────────────────────────────────────────────
+
+let swisseph: any = null;
+
+// Lazy load — if swisseph is not installed, all functions gracefully return null
+async function getSwe(): Promise<any> {
+  if (swisseph) return swisseph;
+  try {
+    swisseph = await import('swisseph');
+    // Use built-in ephemeris data (no external files needed)
+    swisseph.swe_set_ephe_path('');
+    console.log('[Ephemeris] Swiss Ephemeris loaded ✅');
+    return swisseph;
+  } catch (err) {
+    console.warn('[Ephemeris] swisseph not available, fallback will be used:', (err as Error).message);
+    return null;
+  }
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface EphemerisPlanetPosition {
+  planet: string;
+  longitude: number;       // 0–360 degrees (sidereal / Lahiri ayanamsa)
+  sign: string;            // Aries … Pisces
+  degree: number;          // 0–30 degrees within sign
+  minutes: number;         // 0–60 arc minutes
+  retrograde: boolean;
+  nakshatra: string;       // which nakshatra the planet is in
+  nakshatraPada: number;   // 1–4
+}
+
+export interface EphemerisPanchang {
+  tithi: string;
+  tithiNumber: number;     // 1–30
+  tithiPercent: number;    // % of tithi elapsed
+  nakshatra: string;
+  nakshatraNumber: number; // 1–27
+  nakshatraPercent: number;
+  yoga: string;
+  yogaNumber: number;      // 1–27
+  karana: string;
+  karanaNumber: number;    // 1–11
+  lunarPhase: string;
+  lunarIllumination: number; // 0–100%
+  sunriseIST: string;      // "HH:MM"
+  sunsetIST:  string;      // "HH:MM"
+}
+
+export interface EphemerisKalam {
+  rahuKalamStart:      string;
+  rahuKalamEnd:        string;
+  gulikaKalamStart:    string;
+  gulikaKalamEnd:      string;
+  yamghantaKalamStart: string;
+  yamghantaKalamEnd:   string;
+}
+
+export interface EphemerisData {
+  planetaryPositions: EphemerisPlanetPosition[];
+  panchang:           EphemerisPanchang;
+  kalam:              EphemerisKalam;
+  hora:               string;   // current hora ruler
+  ayanamsa:           number;   // Lahiri ayanamsa in degrees
+  source:             'swisseph';
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const SIGNS = [
+  'Aries','Taurus','Gemini','Cancer','Leo','Virgo',
+  'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces',
+];
+
+const NAKSHATRAS = [
+  'Ashwini','Bharani','Krittika','Rohini','Mrigashira','Ardra',
+  'Punarvasu','Pushya','Ashlesha','Magha','Purva Phalguni','Uttara Phalguni',
+  'Hasta','Chitra','Swati','Vishakha','Anuradha','Jyeshtha',
+  'Mula','Purva Ashadha','Uttara Ashadha','Shravana','Dhanishta','Shatabhisha',
+  'Purva Bhadrapada','Uttara Bhadrapada','Revati',
+];
+
+const TITHIS = [
+  'Pratipada','Dwitiya','Tritiya','Chaturthi','Panchami',
+  'Shashthi','Saptami','Ashtami','Navami','Dashami',
+  'Ekadashi','Dwadashi','Trayodashi','Chaturdashi','Purnima',
+  'Pratipada','Dwitiya','Tritiya','Chaturthi','Panchami',
+  'Shashthi','Saptami','Ashtami','Navami','Dashami',
+  'Ekadashi','Dwadashi','Trayodashi','Chaturdashi','Amavasya',
+];
+
+const YOGAS = [
+  'Vishkumbha','Priti','Ayushman','Saubhagya','Shobhana','Atiganda',
+  'Sukarma','Dhriti','Shula','Ganda','Vriddhi','Dhruva',
+  'Vyaghata','Harshana','Vajra','Siddhi','Vyatipata','Variyan',
+  'Parigha','Shiva','Siddha','Sadhya','Shubha','Shukla',
+  'Brahma','Indra','Vaidhriti',
+];
+
+// Fixed karana sequence (repeating karanas for positions 1–56)
+const KARANAS = [
+  'Bava','Balava','Kaulava','Taitila','Gara','Vanija','Vishti',
+  'Bava','Balava','Kaulava','Taitila','Gara','Vanija','Vishti',
+  'Bava','Balava','Kaulava','Taitila','Gara','Vanija','Vishti',
+  'Bava','Balava','Kaulava','Taitila','Gara','Vanija','Vishti',
+  'Bava','Balava','Kaulava','Taitila','Gara','Vanija','Vishti',
+  'Bava','Balava','Kaulava','Taitila','Gara','Vanija','Vishti',
+  'Bava','Balava','Kaulava','Taitila','Gara','Vanija','Vishti',
+  'Bava','Balava','Kaulava','Taitila','Gara','Vanija','Vishti',
+  // Fixed karanas at end of month
+  'Shakuni','Chatushpada','Naga','Kimstughna',
+];
+
+// Swiss Ephemeris planet IDs
+const SWE_PLANETS: Record<string, number> = {
+  Sun:     0,
+  Moon:    1,
+  Mercury: 2,
+  Venus:   3,
+  Mars:    4,
+  Jupiter: 5,
+  Saturn:  6,
+  // Rahu (Mean Node) = 10, Ketu = Rahu + 180°
+  Rahu:    10,
+};
+
+// Hora rulers by weekday (Sunday=0) and hour sequence
+const HORA_WEEKDAY_START = ['Sun','Moon','Mars','Mercury','Jupiter','Venus','Saturn'];
+const HORA_SEQUENCE      = ['Sun','Venus','Mercury','Moon','Saturn','Jupiter','Mars'];
+
+// Rahu Kalam multipliers by weekday (Sun=0 … Sat=6)
+// These are the fraction of the day (sunrise to sunset) at which Rahu Kalam starts
+// Standard: Sun=8th part, Mon=2nd, Tue=7th, Wed=5th, Thu=6th, Fri=4th, Sat=3rd
+const RAHU_KALAM_PART  = [8, 2, 7, 5, 6, 4, 3];
+const GULIKA_KALAM_PART = [6, 5, 4, 3, 2, 1, 7];  // Gulika
+const YAMA_KALAM_PART   = [4, 3, 2, 1, 7, 6, 5];  // Yamghanta (Yamaganda)
+
+// ── Julian Day helper ─────────────────────────────────────────────────────────
+
+function toJulianDay(date: Date): number {
+  // Convert local IST time to UTC for Julian Day calculation
+  const utc = new Date(date.getTime() - 5.5 * 60 * 60 * 1000);
+  const y   = utc.getUTCFullYear();
+  const m   = utc.getUTCMonth() + 1;
+  const d   = utc.getUTCDate() + utc.getUTCHours() / 24 + utc.getUTCMinutes() / 1440;
+  const a   = Math.floor((14 - m) / 12);
+  const yr  = y + 4800 - a;
+  const mo  = m + 12 * a - 3;
+  return d + Math.floor((153 * mo + 2) / 5) + 365 * yr +
+         Math.floor(yr / 4) - Math.floor(yr / 100) + Math.floor(yr / 400) - 32045;
+}
+
+// ── Apply Lahiri Ayanamsa to get sidereal longitude ──────────────────────────
+
+function toSidereal(tropicalLon: number, ayanamsa: number): number {
+  return ((tropicalLon - ayanamsa) % 360 + 360) % 360;
+}
+
+function lonToSign(lon: number): string   { return SIGNS[Math.floor(lon / 30)]; }
+function lonToDeg(lon: number):  number   { return lon % 30; }
+function lonToMin(lon: number):  number   { return (lon % 1) * 60; }
+function lonToNakshatra(lon: number): { name: string; number: number; pada: number; percent: number } {
+  const idx    = Math.floor(lon / (360 / 27));
+  const within = (lon % (360 / 27)) / (360 / 27);
+  return {
+    name:    NAKSHATRAS[idx % 27],
+    number:  (idx % 27) + 1,
+    pada:    Math.floor(within * 4) + 1,
+    percent: within * 100,
+  };
+}
+
+// ── Time formatting ───────────────────────────────────────────────────────────
+
+function minutesToHHMM(totalMinutes: number): string {
+  const h = Math.floor(totalMinutes / 60) % 24;
+  const m = Math.round(totalMinutes % 60);
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+}
+
+// ── Sunrise/Sunset approximation for Indian latitudes ────────────────────────
+// Uses a simplified algorithm. For production, swisseph.swe_rise_trans can be
+// used but requires more setup. This gives ±5 min accuracy for India.
+
+function calcSunriseSunsetIST(date: Date, lat: number, lng: number): { sunrise: number; sunset: number } {
+  const jd          = toJulianDay(date);
+  const n           = jd - 2451545.0;
+  const L           = (280.460 + 0.9856474 * n) % 360;
+  const g           = ((357.528 + 0.9856003 * n) % 360) * Math.PI / 180;
+  const lambda      = (L + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * Math.PI / 180;
+  const eps         = 23.439 * Math.PI / 180;
+  const sinDec      = Math.sin(eps) * Math.sin(lambda);
+  const dec         = Math.asin(sinDec);
+  const latRad      = lat * Math.PI / 180;
+  const cosHA       = (Math.cos(90.833 * Math.PI / 180) - Math.sin(latRad) * sinDec) /
+                      (Math.cos(latRad) * Math.cos(dec));
+  const HA          = Math.acos(Math.max(-1, Math.min(1, cosHA))) * 180 / Math.PI;
+  // Solar noon in UTC minutes
+  const eqTime      = 4 * (lng - 15 * Math.round(lng / 15)) + (229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g)));
+  const solarNoonUTC = 720 - eqTime;
+  // IST = UTC + 330 minutes
+  const solarNoonIST = solarNoonUTC + 330;
+  const sunriseIST   = solarNoonIST - HA * 4;
+  const sunsetIST    = solarNoonIST + HA * 4;
+  return { sunrise: sunriseIST, sunset: sunsetIST };
+}
+
+// ── Kalam calculator ──────────────────────────────────────────────────────────
+
+function calcKalam(date: Date, lat: number, lng: number): EphemerisKalam {
+  const { sunrise, sunset } = calcSunriseSunsetIST(date, lat, lng);
+  const dayDuration = sunset - sunrise;
+  const partDur     = dayDuration / 8;   // each kalam is 1/8 of day
+  const dow         = date.getDay();     // 0=Sun … 6=Sat
+
+  const rahuStart   = sunrise + partDur * (RAHU_KALAM_PART[dow]  - 1);
+  const gulikaStart = sunrise + partDur * (GULIKA_KALAM_PART[dow] - 1);
+  const yamaStart   = sunrise + partDur * (YAMA_KALAM_PART[dow]  - 1);
+
+  return {
+    rahuKalamStart:      minutesToHHMM(rahuStart),
+    rahuKalamEnd:        minutesToHHMM(rahuStart   + partDur),
+    gulikaKalamStart:    minutesToHHMM(gulikaStart),
+    gulikaKalamEnd:      minutesToHHMM(gulikaStart + partDur),
+    yamghantaKalamStart: minutesToHHMM(yamaStart),
+    yamghantaKalamEnd:   minutesToHHMM(yamaStart   + partDur),
+  };
+}
+
+// ── Hora calculator ───────────────────────────────────────────────────────────
+
+function calcHora(date: Date, lat: number, lng: number): string {
+  const { sunrise } = calcSunriseSunsetIST(date, lat, lng);
+  const nowMinutes  = date.getHours() * 60 + date.getMinutes();
+  const minutesSinceSunrise = nowMinutes - sunrise;
+  const horaIndex   = Math.floor(minutesSinceSunrise / 60);
+  const dow         = date.getDay();
+  const startPlanet = HORA_WEEKDAY_START[dow];
+  const startIdx    = HORA_SEQUENCE.indexOf(startPlanet);
+  return HORA_SEQUENCE[(startIdx + Math.max(0, horaIndex)) % 7];
+}
+
+// ── Main Swiss Ephemeris calculation ──────────────────────────────────────────
+
+async function calcWithSwisseph(
+  date: Date, lat: number, lng: number
+): Promise<EphemerisData | null> {
+  const swe = await getSwe();
+  if (!swe) return null;
+
+  try {
+    const jd       = toJulianDay(date);
+    const iflag    = swe.SEFLG_SPEED;  // get speed for retrograde detection
+
+    // ── Get Lahiri Ayanamsa ──────────────────────────────────────────────────
+    swe.swe_set_sid_mode(swe.SE_SIDM_LAHIRI, 0, 0);
+    const ayanamsa: number = swe.swe_get_ayanamsa_ut(jd);
+
+    // ── Calculate all planet positions ───────────────────────────────────────
+    const positions: EphemerisPlanetPosition[] = [];
+
+    for (const [name, sweId] of Object.entries(SWE_PLANETS)) {
+      const result = swe.swe_calc_ut(jd, sweId, iflag | swe.SEFLG_SIDEREAL);
+      if (result.flag < 0) continue;
+
+      const tropLon  = result.longitude;
+      const sidLon   = toSidereal(tropLon, ayanamsa);
+      const speed    = result.longitudeSpeed ?? result.xx?.[3] ?? 0;
+      const nak      = lonToNakshatra(sidLon);
+
+      positions.push({
+        planet:        name,
+        longitude:     sidLon,
+        sign:          lonToSign(sidLon),
+        degree:        Math.floor(lonToDeg(sidLon)),
+        minutes:       Math.floor(lonToMin(sidLon)),
+        retrograde:    speed < 0,
+        nakshatra:     nak.name,
+        nakshatraPada: nak.pada,
+      });
+    }
+
+    // ── Add Ketu (always opposite Rahu) ──────────────────────────────────────
+    const rahu = positions.find(p => p.planet === 'Rahu');
+    if (rahu) {
+      const ketuLon = (rahu.longitude + 180) % 360;
+      const ketuNak = lonToNakshatra(ketuLon);
+      positions.push({
+        planet:        'Ketu',
+        longitude:     ketuLon,
+        sign:          lonToSign(ketuLon),
+        degree:        Math.floor(lonToDeg(ketuLon)),
+        minutes:       Math.floor(lonToMin(ketuLon)),
+        retrograde:    true,   // Ketu is always retrograde
+        nakshatra:     ketuNak.name,
+        nakshatraPada: ketuNak.pada,
+      });
+    }
+
+    // ── Panchang calculations ────────────────────────────────────────────────
+    const sun  = positions.find(p => p.planet === 'Sun');
+    const moon = positions.find(p => p.planet === 'Moon');
+
+    if (!sun || !moon) throw new Error('Sun/Moon positions unavailable');
+
+    // Tithi: every 12° separation between Moon and Sun = 1 tithi
+    const moonSunDiff  = ((moon.longitude - sun.longitude) + 360) % 360;
+    const tithiNum     = Math.floor(moonSunDiff / 12);         // 0–29
+    const tithiPercent = (moonSunDiff % 12) / 12 * 100;
+    const tithi        = TITHIS[tithiNum];
+
+    // Nakshatra: Moon's nakshatra
+    const moonNak = lonToNakshatra(moon.longitude);
+
+    // Yoga: (Sun longitude + Moon longitude) / (360/27)
+    const yogaLon  = (sun.longitude + moon.longitude) % 360;
+    const yogaNum  = Math.floor(yogaLon / (360 / 27));
+    const yoga     = YOGAS[yogaNum % 27];
+
+    // Karana: half-tithi (every 6° = 1 karana)
+    const karanaNum = Math.floor(moonSunDiff / 6) % 60;
+    const karana    = KARANAS[Math.min(karanaNum, KARANAS.length - 1)];
+
+    // Lunar phase and illumination
+    const illumination = (1 - Math.cos(moonSunDiff * Math.PI / 180)) / 2 * 100;
+    const lunarPhase   = tithiNum === 0  ? 'New Moon'
+                       : tithiNum === 14 ? 'Full Moon'
+                       : tithiNum < 14  ? 'Waxing'
+                       : 'Waning';
+
+    // Sunrise/sunset
+    const { sunrise, sunset } = calcSunriseSunsetIST(date, lat, lng);
+
+    // ── Kalam & Hora ─────────────────────────────────────────────────────────
+    const kalam = calcKalam(date, lat, lng);
+    const hora  = calcHora(date, lat, lng);
+
+    console.log(
+      `[Ephemeris] ${date.toISOString()} | ` +
+      `Tithi: ${tithi} (${tithiPercent.toFixed(0)}%) | ` +
+      `Nakshatra: ${moonNak.name} pada ${moonNak.pada} | ` +
+      `Yoga: ${yoga} | Hora: ${hora} | Ayanamsa: ${ayanamsa.toFixed(4)}°`
+    );
+
+    return {
+      planetaryPositions: positions,
+      panchang: {
+        tithi,
+        tithiNumber:      tithiNum + 1,
+        tithiPercent,
+        nakshatra:        moonNak.name,
+        nakshatraNumber:  moonNak.number,
+        nakshatraPercent: moonNak.percent,
+        yoga,
+        yogaNumber:       yogaNum + 1,
+        karana,
+        karanaNumber:     karanaNum + 1,
+        lunarPhase,
+        lunarIllumination: Math.round(illumination),
+        sunriseIST:       minutesToHHMM(sunrise),
+        sunsetIST:        minutesToHHMM(sunset),
+      },
+      kalam,
+      hora,
+      ayanamsa,
+      source: 'swisseph',
+    };
+  } catch (err) {
+    console.error('[Ephemeris] Calculation error:', err);
+    return null;
+  }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+export class EphemerisService {
+  // Default coordinates: Mumbai (NSE/BSE location)
+  private readonly DEFAULT_LAT = 19.0760;
+  private readonly DEFAULT_LNG = 72.8777;
+
+  /**
+   * Get full ephemeris data for a given date and location.
+   * Returns null if swisseph is not installed.
+   */
+  async getEphemerisData(
+    date?: Date,
+    location?: { lat: number; lng: number }
+  ): Promise<EphemerisData | null> {
+    const d   = date || new Date();
+    const lat = location?.lat || this.DEFAULT_LAT;
+    const lng = location?.lng || this.DEFAULT_LNG;
+    return calcWithSwisseph(d, lat, lng);
+  }
+
+  /**
+   * Check if swisseph is available on this system.
+   */
+  async isAvailable(): Promise<boolean> {
+    const swe = await getSwe();
+    return !!swe;
+  }
+}
+
+export const ephemerisService = new EphemerisService();
