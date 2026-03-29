@@ -1,10 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// astrologyService.ts  —  Real-time Vedic astrology
-// Priority: 1) Swiss Ephemeris  2) Prokerala API  3) Internal fallback
-// Location: server/astrologyService.ts
+// astrologyService.ts  —  Real-time Vedic astrology via Prokerala API
 // ─────────────────────────────────────────────────────────────────────────────
-
-import { ephemerisService } from './ephemerisService';
 
 interface PlanetaryPosition {
   planet: string;
@@ -35,7 +31,7 @@ interface AstrologyData {
   gulikaKalamEnd: string;
   yamghantaKalamStart: string;
   yamghantaKalamEnd: string;
-  source?: 'prokerala' | 'swisseph' | 'calculated';
+  source?: 'prokerala' | 'calculated';
 }
 
 interface AstrologyPrediction {
@@ -67,15 +63,15 @@ async function getProkeralaToken(): Promise<string | null> {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        grant_type:    'client_credentials',
-        client_id:     process.env.PROKERALA_CLIENT_ID,
+        grant_type: 'client_credentials',
+        client_id: process.env.PROKERALA_CLIENT_ID,
         client_secret: process.env.PROKERALA_CLIENT_SECRET,
       }),
     });
     if (!res.ok) throw new Error(`Token request failed: ${res.status}`);
     const data = await res.json();
     prokeralaToken = data.access_token;
-    tokenExpiry    = Date.now() + (data.expires_in - 60) * 1000;
+    tokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
     console.log('[Astro] Prokerala token obtained ✅');
     return prokeralaToken;
   } catch (err) {
@@ -84,17 +80,23 @@ async function getProkeralaToken(): Promise<string | null> {
   }
 }
 
-// ─── Per-endpoint cache (5 min TTL) ──────────────────────────────────────────
-const PROKERALA_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// ─── Per-endpoint response cache (1 minute TTL) ───────────────────────────────
+// Key format: "<endpoint>|<datetime>|<coordinates>"
+// Each of the 4 endpoints (panchang, planet-position, hora, inauspicious-period)
+// gets its own cache entry so identical calls within 1 minute skip the API call.
+const PROKERALA_CACHE_TTL = 60 * 1000; // 1 minute in milliseconds
 const prokeralaCache = new Map<string, { data: any; cachedAt: number }>();
 
 function makeProkeralaCacheKey(endpoint: string, params: Record<string, string>): string {
-  const dt     = params.datetime    ? params.datetime.substring(0, 16) : '';
+  // Key = endpoint + datetime (rounded to minute) + coordinates
+  // Rounding datetime to the minute means calls within the same minute share a cache entry
+  const dt = params.datetime ? params.datetime.substring(0, 16) : ''; // "2026-03-22T14:30"
   const coords = params.coordinates || '';
   return `${endpoint}|${dt}|${coords}`;
 }
 
 async function prokeralaGet(endpoint: string, params: Record<string, string>): Promise<any> {
+  // ── Check cache first ──────────────────────────────────────────────────────
   const cacheKey = makeProkeralaCacheKey(endpoint, params);
   const cached   = prokeralaCache.get(cacheKey);
   if (cached && (Date.now() - cached.cachedAt) < PROKERALA_CACHE_TTL) {
@@ -102,6 +104,7 @@ async function prokeralaGet(endpoint: string, params: Record<string, string>): P
     return cached.data;
   }
 
+  // ── Cache miss — fetch from Prokerala ─────────────────────────────────────
   const token = await getProkeralaToken();
   if (!token) return null;
 
@@ -118,8 +121,11 @@ async function prokeralaGet(endpoint: string, params: Record<string, string>): P
     }
     const json = await res.json();
     const data = json.data || json;
+
+    // ── Store in cache ────────────────────────────────────────────────────────
     prokeralaCache.set(cacheKey, { data, cachedAt: Date.now() });
-    console.log(`[Astro] Cached ${endpoint} response (TTL: 5 min)`);
+    console.log(`[Astro] Cached ${endpoint} response (TTL: 1 min)`);
+
     return data;
   } catch (err) {
     console.error(`[Astro] Prokerala ${endpoint} error:`, err);
@@ -168,77 +174,31 @@ export class AstrologyService {
     'Sun','Venus','Mercury',
   ];
 
-  // ── 1. Swiss Ephemeris (primary source) ───────────────────────────────────
-  private async fetchSwissEphemeris(
-    date: Date, lat: number, lng: number
-  ): Promise<AstrologyData | null> {
-    try {
-      const ephem = await ephemerisService.getEphemerisData(date, { lat, lng });
-      if (!ephem) return null;
-
-      console.log('[Astro] Using Swiss Ephemeris data ✅');
-
-      // Map EphemerisPlanetPosition → PlanetaryPosition
-      const planetaryPositions: PlanetaryPosition[] = ephem.planetaryPositions.map(p => ({
-        planet:     p.planet,
-        sign:       p.sign,
-        degree:     p.degree,
-        retrograde: p.retrograde,
-      }));
-
-      return {
-        hora:               ephem.hora,
-        tithi:              ephem.panchang.tithi,
-        nakshatra:          ephem.panchang.nakshatra,
-        yoga:               ephem.panchang.yoga,
-        karana:             ephem.panchang.karana,
-        lunarPhase:         ephem.panchang.lunarPhase,
-        lunarIllumination:  ephem.panchang.lunarIllumination,
-        planetaryPositions,
-        muhuratWindows:     this.calcMuhuratWindows(date, ephem.panchang.sunriseIST),
-        rahuKalamStart:     ephem.kalam.rahuKalamStart,
-        rahuKalamEnd:       ephem.kalam.rahuKalamEnd,
-        gulikaKalamStart:   ephem.kalam.gulikaKalamStart,
-        gulikaKalamEnd:     ephem.kalam.gulikaKalamEnd,
-        yamghantaKalamStart: ephem.kalam.yamghantaKalamStart,
-        yamghantaKalamEnd:   ephem.kalam.yamghantaKalamEnd,
-        source: 'swisseph',
-      };
-    } catch (err) {
-      console.error('[Astro] Swiss Ephemeris error (non-fatal):', err);
-      return null;
-    }
-  }
-
-  // ── 2. Prokerala Panchang ─────────────────────────────────────────────────
-  private async fetchProkeralaPanchang(
-    date: Date, lat: number, lng: number
-  ): Promise<Partial<AstrologyData> | null> {
+  // ── Panchang ─────────────────────────────────────────────────────────────
+  private async fetchProkeralaPanchang(date: Date, lat: number, lng: number): Promise<Partial<AstrologyData> | null> {
     const data = await prokeralaGet('panchang', {
-      datetime:    prokeralaDateTime(date),
+      datetime: prokeralaDateTime(date),
       coordinates: `${lat},${lng}`,
-      ayanamsa:    '1',
+      ayanamsa: '1',
     });
     if (!data) return null;
     try {
       return {
-        tithi:     data.tithi?.details?.[0]?.name     || data.tithi?.name     || this.calcTithi(date),
-        nakshatra: data.nakshatra?.details?.[0]?.name  || data.nakshatra?.name || this.calcNakshatra(date),
-        yoga:      data.yoga?.details?.[0]?.name      || data.yoga?.name      || 'Siddha',
-        karana:    data.karana?.details?.[0]?.name    || data.karana?.name    || 'Bava',
-        source:    'prokerala',
+        tithi:     data.tithi?.details?.[0]?.name    || data.tithi?.name    || this.calcTithi(date),
+        nakshatra: data.nakshatra?.details?.[0]?.name || data.nakshatra?.name || this.calcNakshatra(date),
+        yoga:      data.yoga?.details?.[0]?.name     || data.yoga?.name     || 'Siddha',
+        karana:    data.karana?.details?.[0]?.name   || data.karana?.name   || 'Bava',
+        source: 'prokerala',
       };
     } catch { return null; }
   }
 
-  // ── 2. Prokerala Planet positions ─────────────────────────────────────────
-  private async fetchProkeralaPlanets(
-    date: Date, lat: number, lng: number
-  ): Promise<PlanetaryPosition[] | null> {
+  // ── Planet positions ──────────────────────────────────────────────────────
+  private async fetchProkeralaPlanets(date: Date, lat: number, lng: number): Promise<PlanetaryPosition[] | null> {
     const data = await prokeralaGet('planet-position', {
-      datetime:    prokeralaDateTime(date),
+      datetime: prokeralaDateTime(date),
       coordinates: `${lat},${lng}`,
-      ayanamsa:    '1',
+      ayanamsa: '1',
     });
     if (!data || !data.planet_position) return null;
 
@@ -248,24 +208,23 @@ export class AstrologyService {
     ];
     try {
       return data.planet_position.map((p: any) => ({
-        planet:     p.name,
-        sign:       signs[p.rasi - 1] || signs[0],
-        degree:     parseFloat(p.degree) || 0,
+        planet: p.name,
+        sign: signs[p.rasi - 1] || signs[0],
+        degree: parseFloat(p.degree) || 0,
         retrograde: p.isRetrograde === true || p.is_retrograde === true,
       }));
     } catch { return null; }
   }
 
-  // ── 2. Prokerala Hora ─────────────────────────────────────────────────────
-  private async fetchProkeralaHora(
-    date: Date, lat: number, lng: number
-  ): Promise<string | null> {
+  // ── Hora ──────────────────────────────────────────────────────────────────
+  private async fetchProkeralaHora(date: Date, lat: number, lng: number): Promise<string | null> {
     const data = await prokeralaGet('hora', {
       datetime:    prokeralaDateTime(date),
       coordinates: `${lat},${lng}`,
       ayanamsa:    '1',
     });
     if (!data) return null;
+
     try {
       const now   = date.getTime();
       const horas: any[] = data.hora || data.horas || [];
@@ -278,28 +237,30 @@ export class AstrologyService {
     } catch { return null; }
   }
 
-  // ── 2. Prokerala Kalam ────────────────────────────────────────────────────
-  private async fetchProkeralaKalam(
-    date: Date, lat: number, lng: number
-  ): Promise<Partial<AstrologyData> | null> {
+  // ── Kalam (inauspicious periods) ──────────────────────────────────────────
+  private async fetchProkeralaKalam(date: Date, lat: number, lng: number): Promise<Partial<AstrologyData> | null> {
     const data = await prokeralaGet('inauspicious-period', {
       datetime:    prokeralaDateTime(date),
       coordinates: `${lat},${lng}`,
       ayanamsa:    '1',
     });
     if (!data) return null;
+
     try {
       const fmt = (iso: string) => {
         if (!iso) return '';
         try { return new Date(iso).toTimeString().substring(0, 5); } catch { return ''; }
       };
+
       const periods: any[] = data.inauspicious_period || data.inauspiciousPeriod || [];
       const find = (name: string) => periods.find((p: any) =>
         (p.name || p.type || '').toLowerCase().includes(name.toLowerCase())
       );
+
       const rahu   = find('rahu');
       const gulika = find('gulika') || find('gulika kalam');
       const yam    = find('yamaganda') || find('yamghanta');
+
       return {
         rahuKalamStart:      fmt(rahu?.start   || rahu?.startTime   || ''),
         rahuKalamEnd:        fmt(rahu?.end     || rahu?.endTime     || ''),
@@ -311,21 +272,12 @@ export class AstrologyService {
     } catch { return null; }
   }
 
-  // ── Main: get astrology data (priority cascade) ───────────────────────────
-  async getCurrentAstrology(
-    date?: Date,
-    location?: { lat: number; lng: number }
-  ): Promise<AstrologyData> {
+  // ── Main: get real-time astrology data ────────────────────────────────────
+  async getCurrentAstrology(date?: Date, location?: { lat: number; lng: number }): Promise<AstrologyData> {
     const d   = date || new Date();
     const lat = location?.lat || this.DEFAULT_LAT;
     const lng = location?.lng || this.DEFAULT_LNG;
 
-    // ── Priority 1: Swiss Ephemeris ──────────────────────────────────────────
-    const swissData = await this.fetchSwissEphemeris(d, lat, lng);
-    if (swissData) return swissData;
-
-    // ── Priority 2: Prokerala API (parallel fetch) ───────────────────────────
-    console.log('[Astro] Swiss Ephemeris unavailable, trying Prokerala...');
     const [panchang, planets, hora, kalam] = await Promise.all([
       this.fetchProkeralaPanchang(d, lat, lng),
       this.fetchProkeralaPlanets(d, lat, lng),
@@ -333,63 +285,36 @@ export class AstrologyService {
       this.fetchProkeralaKalam(d, lat, lng),
     ]);
 
-    const isProkerala = !!(panchang || planets || hora || kalam);
-    if (isProkerala) console.log('[Astro] Using Prokerala data ✅');
+    const isReal = !!(panchang || planets || hora || kalam);
+    if (isReal) console.log('[Astro] Using real Prokerala data ✅');
+    else        console.log('[Astro] Prokerala unavailable, using calculated fallback');
 
-    if (isProkerala) {
-      return {
-        hora:               hora || this.calcHora(d),
-        tithi:              panchang?.tithi     || this.calcTithi(d),
-        nakshatra:          panchang?.nakshatra || this.calcNakshatra(d),
-        yoga:               panchang?.yoga      || this.calcYoga(d),
-        karana:             panchang?.karana    || this.calcKarana(d),
-        lunarPhase:         this.calcLunarPhase(d),
-        lunarIllumination:  this.calcLunarIllumination(d),
-        planetaryPositions: planets || this.calcPlanetPositions(d),
-        muhuratWindows:     this.calcMuhuratWindows(d),
-        rahuKalamStart:     kalam?.rahuKalamStart    || this.calcRahuKalam(d).start,
-        rahuKalamEnd:       kalam?.rahuKalamEnd      || this.calcRahuKalam(d).end,
-        gulikaKalamStart:   kalam?.gulikaKalamStart  || this.calcGulikaKalam(d).start,
-        gulikaKalamEnd:     kalam?.gulikaKalamEnd    || this.calcGulikaKalam(d).end,
-        yamghantaKalamStart: kalam?.yamghantaKalamStart || this.calcYamghantaKalam(d).start,
-        yamghantaKalamEnd:   kalam?.yamghantaKalamEnd   || this.calcYamghantaKalam(d).end,
-        source: 'prokerala',
-      };
-    }
-
-    // ── Priority 3: Internal fallback calculators ────────────────────────────
-    console.log('[Astro] All APIs unavailable, using internal fallback calculators');
     return {
-      hora:               this.calcHora(d),
-      tithi:              this.calcTithi(d),
-      nakshatra:          this.calcNakshatra(d),
-      yoga:               this.calcYoga(d),
-      karana:             this.calcKarana(d),
+      hora:               hora || this.calcHora(d),
+      tithi:              panchang?.tithi     || this.calcTithi(d),
+      nakshatra:          panchang?.nakshatra || this.calcNakshatra(d),
+      yoga:               panchang?.yoga      || this.calcYoga(d),
+      karana:             panchang?.karana    || this.calcKarana(d),
       lunarPhase:         this.calcLunarPhase(d),
       lunarIllumination:  this.calcLunarIllumination(d),
-      planetaryPositions: this.calcPlanetPositions(d),
+      planetaryPositions: planets || this.calcPlanetPositions(d),
       muhuratWindows:     this.calcMuhuratWindows(d),
-      rahuKalamStart:     this.calcRahuKalam(d).start,
-      rahuKalamEnd:       this.calcRahuKalam(d).end,
-      gulikaKalamStart:   this.calcGulikaKalam(d).start,
-      gulikaKalamEnd:     this.calcGulikaKalam(d).end,
-      yamghantaKalamStart: this.calcYamghantaKalam(d).start,
-      yamghantaKalamEnd:   this.calcYamghantaKalam(d).end,
-      source: 'calculated',
+      rahuKalamStart:     kalam?.rahuKalamStart    || this.calcRahuKalam(d).start,
+      rahuKalamEnd:       kalam?.rahuKalamEnd      || this.calcRahuKalam(d).end,
+      gulikaKalamStart:   kalam?.gulikaKalamStart  || this.calcGulikaKalam(d).start,
+      gulikaKalamEnd:     kalam?.gulikaKalamEnd    || this.calcGulikaKalam(d).end,
+      yamghantaKalamStart: kalam?.yamghantaKalamStart || this.calcYamghantaKalam(d).start,
+      yamghantaKalamEnd:   kalam?.yamghantaKalamEnd   || this.calcYamghantaKalam(d).end,
+      source: isReal ? 'prokerala' : 'calculated',
     };
   }
 
-  async getDrikpanchangData(
-    date: Date,
-    location?: { lat: number; lng: number }
-  ): Promise<AstrologyData | null> {
+  async getDrikpanchangData(date: Date, location?: { lat: number; lng: number }): Promise<AstrologyData | null> {
     return this.getCurrentAstrology(date, location);
   }
 
   // ── Prediction engine ─────────────────────────────────────────────────────
-  async generateAstroPrediction(
-    symbol: string, date: Date, currentPrice: number
-  ): Promise<AstrologyPrediction> {
+  async generateAstroPrediction(symbol: string, date: Date, currentPrice: number): Promise<AstrologyPrediction> {
     const astroData      = await this.getCurrentAstrology(date);
     const horaScore      = this.calcHoraScore(astroData.hora, symbol);
     const tithiScore     = this.calcTithiScore(astroData.tithi);
@@ -410,25 +335,12 @@ export class AstrologyService {
 
     return {
       direction, strength: total, confidence,
-      factors: {
-        hora:      horaScore,
-        tithi:     tithiScore,
-        nakshatra: nakshatraScore,
-        planetary: planetaryScore,
-        muhurat:   muhuratScore,
-        rahuKetu:  rahuKetuScore,
-      },
-      recommendation,
-      warnings,
+      factors: { hora: horaScore, tithi: tithiScore, nakshatra: nakshatraScore, planetary: planetaryScore, muhurat: muhuratScore, rahuKetu: rahuKetuScore },
+      recommendation, warnings,
     };
   }
 
-  combineAIAndAstroPredictions(
-    aiPrediction: any,
-    astroPrediction: AstrologyPrediction,
-    feedbackAdjustment = 0,
-    currentPrice = 0
-  ): any {
+  combineAIAndAstroPredictions(aiPrediction: any, astroPrediction: AstrologyPrediction, feedbackAdjustment = 0, currentPrice = 0): any {
     if (!aiPrediction) {
       return {
         prediction: {
@@ -450,9 +362,7 @@ export class AstrologyService {
 
     const aiDir    = aiPrediction.prediction?.direction || 'neutral';
     const astroDir = astroPrediction.direction;
-    const opposite =
-      (aiDir === 'bullish' && astroDir === 'bearish') ||
-      (aiDir === 'bearish' && astroDir === 'bullish');
+    const opposite = (aiDir === 'bullish' && astroDir === 'bearish') || (aiDir === 'bearish' && astroDir === 'bullish');
 
     if (opposite) {
       return {
@@ -484,14 +394,14 @@ export class AstrologyService {
     };
   }
 
-  // ── Fallback calculators (used only if both Swiss Ephemeris & Prokerala fail)
+  // ── Fallback calculators ──────────────────────────────────────────────────
   private calcHora(d: Date): string { return this.horaRulers[d.getHours()]; }
   private calcTithi(d: Date): string {
     const t = ['Pratipada','Dwitiya','Tritiya','Chaturthi','Panchami','Shashthi','Saptami','Ashtami','Navami','Dashami','Ekadashi','Dwadashi','Trayodashi','Chaturdashi','Purnima'];
     return t[(d.getDate() - 1) % 15];
   }
   private calcNakshatra(d: Date): string {
-    const n   = Object.keys(this.nakshatraQualities);
+    const n = Object.keys(this.nakshatraQualities);
     const doy = Math.floor((d.getTime() - new Date(d.getFullYear(), 0, 0).getTime()) / 86400000);
     return n[doy % 27];
   }
@@ -506,7 +416,7 @@ export class AstrologyService {
   private calcLunarPhase(d: Date): string {
     const day = d.getDate();
     if (day === 1 || day === 30) return 'New Moon';
-    if (day === 15)              return 'Full Moon';
+    if (day === 15) return 'Full Moon';
     return day < 15 ? 'Waxing' : 'Waning';
   }
   private calcLunarIllumination(d: Date): number {
@@ -515,64 +425,38 @@ export class AstrologyService {
   }
   private calcPlanetPositions(d: Date): PlanetaryPosition[] {
     const signs = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo','Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
-    const T     = (this.julianDay(d) - 2451545.0) / 36525.0;
+    const T = (this.julianDay(d) - 2451545.0) / 36525.0;
     const base: Record<string, [number, number, number]> = {
-      Sun:     [280.460,  36000.770,     0],
-      Moon:    [218.316, 481267.881,     0],
-      Mercury: [252.250, 149472.515,  6.28],
-      Venus:   [181.979,  58517.816,   4.0],
-      Mars:    [355.433,  19140.303,   2.5],
-      Jupiter: [ 34.351,   3034.906,   1.2],
-      Saturn:  [ 50.078,   1222.114,   0.8],
-      Rahu:    [125.045,  -1934.136,     0],
-      Ketu:    [305.045,   1934.136,     0],
+      Sun:     [280.460, 36000.770, 0],
+      Moon:    [218.316, 481267.881, 0],
+      Mercury: [252.250, 149472.515, 6.28],
+      Venus:   [181.979, 58517.816, 4.0],
+      Mars:    [355.433, 19140.303, 2.5],
+      Jupiter: [34.351,  3034.906, 1.2],
+      Saturn:  [50.078,  1222.114, 0.8],
+      Rahu:    [125.045, -1934.136, 0],
+      Ketu:    [305.045,  1934.136, 0],
     };
     return Object.entries(base).map(([planet, [L0, L1, retro]]) => {
       const lon = ((L0 + L1 * T) % 360 + 360) % 360;
-      return {
-        planet,
-        sign:       signs[Math.floor(lon / 30)],
-        degree:     lon % 30,
-        retrograde: retro > 0 && Math.sin(T * retro) < -0.7,
-      };
+      return { planet, sign: signs[Math.floor(lon / 30)], degree: lon % 30, retrograde: retro > 0 && Math.sin(T * retro) < -0.7 };
     });
   }
   private julianDay(d: Date): number {
-    const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
-    const h = d.getHours() + d.getMinutes() / 60;
+    const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate(), h = d.getHours() + d.getMinutes() / 60;
     const a = Math.floor((14 - m) / 12), yr = y + 4800 - a, mo = m + 12 * a - 3;
-    return day + Math.floor((153 * mo + 2) / 5) + 365 * yr +
-           Math.floor(yr / 4) - Math.floor(yr / 100) + Math.floor(yr / 400) - 32045 +
-           (h - 12) / 24;
+    return day + Math.floor((153 * mo + 2) / 5) + 365 * yr + Math.floor(yr / 4) - Math.floor(yr / 100) + Math.floor(yr / 400) - 32045 + (h - 12) / 24;
   }
-
-  // calcMuhuratWindows accepts optional sunriseIST string from Swiss Ephemeris
-  private calcMuhuratWindows(_d: Date, sunriseIST?: string): MuhuratWindow[] {
-    // If we have actual sunrise, compute Abhijit muhurat (solar noon ± 24 min)
-    if (sunriseIST) {
-      const [sh, sm] = sunriseIST.split(':').map(Number);
-      const sunriseMin = sh * 60 + sm;
-      // Approximate solar noon as sunrise + 6 hours
-      const noonMin    = sunriseMin + 360;
-      const abhijitStart = minutesToHHMM(noonMin - 24);
-      const abhijitEnd   = minutesToHHMM(noonMin + 24);
-      return [
-        { start: abhijitStart, end: abhijitEnd, quality: 'excellent' },
-        { start: minutesToHHMM(sunriseMin),      end: minutesToHHMM(sunriseMin + 90), quality: 'good' },
-        { start: minutesToHHMM(sunriseMin - 90), end: minutesToHHMM(sunriseMin),      quality: 'excellent' },
-      ];
-    }
-    // Static fallback
+  private calcMuhuratWindows(_d: Date): MuhuratWindow[] {
     return [
       { start: '11:36', end: '12:24', quality: 'excellent' },
       { start: '06:00', end: '07:30', quality: 'good' },
       { start: '04:30', end: '06:00', quality: 'excellent' },
     ];
   }
-
-  private calcRahuKalam(d: Date)      { return [{ start: '16:30', end: '18:00' },{ start: '07:30', end: '09:00' },{ start: '15:00', end: '16:30' },{ start: '12:00', end: '13:30' },{ start: '13:30', end: '15:00' },{ start: '10:30', end: '12:00' },{ start: '09:00', end: '10:30' }][d.getDay()]; }
-  private calcGulikaKalam(d: Date)    { return [{ start: '15:00', end: '16:30' },{ start: '13:30', end: '15:00' },{ start: '12:00', end: '13:30' },{ start: '10:30', end: '12:00' },{ start: '09:00', end: '10:30' },{ start: '07:30', end: '09:00' },{ start: '06:00', end: '07:30' }][d.getDay()]; }
-  private calcYamghantaKalam(d: Date) { return [{ start: '12:00', end: '13:30' },{ start: '10:30', end: '12:00' },{ start: '09:00', end: '10:30' },{ start: '07:30', end: '09:00' },{ start: '06:00', end: '07:30' },{ start: '15:00', end: '16:30' },{ start: '13:30', end: '15:00' }][d.getDay()]; }
+  private calcRahuKalam(d: Date)     { return [{ start: '16:30', end: '18:00' }, { start: '07:30', end: '09:00' }, { start: '15:00', end: '16:30' }, { start: '12:00', end: '13:30' }, { start: '13:30', end: '15:00' }, { start: '10:30', end: '12:00' }, { start: '09:00', end: '10:30' }][d.getDay()]; }
+  private calcGulikaKalam(d: Date)   { return [{ start: '15:00', end: '16:30' }, { start: '13:30', end: '15:00' }, { start: '12:00', end: '13:30' }, { start: '10:30', end: '12:00' }, { start: '09:00', end: '10:30' }, { start: '07:30', end: '09:00' }, { start: '06:00', end: '07:30' }][d.getDay()]; }
+  private calcYamghantaKalam(d: Date){ return [{ start: '12:00', end: '13:30' }, { start: '10:30', end: '12:00' }, { start: '09:00', end: '10:30' }, { start: '07:30', end: '09:00' }, { start: '06:00', end: '07:30' }, { start: '15:00', end: '16:30' }, { start: '13:30', end: '15:00' }][d.getDay()]; }
 
   // ── Scoring ───────────────────────────────────────────────────────────────
   private calcHoraScore(hora: string, symbol: string): number {
@@ -585,12 +469,10 @@ export class AstrologyService {
     const bad  = ['Chaturthi','Shashthi','Ashtami','Navami','Chaturdashi'];
     return good.includes(tithi) ? 75 : bad.includes(tithi) ? 25 : 50;
   }
-  private calcNakshatraScore(n: string): number {
-    return (this.nakshatraQualities[n] || 0.5) * 100;
-  }
+  private calcNakshatraScore(n: string): number { return (this.nakshatraQualities[n] || 0.5) * 100; }
   private calcPlanetaryScore(pos: PlanetaryPosition[]): number {
-    const exalt: Record<string, string> = { Sun:'Aries', Moon:'Taurus', Mars:'Capricorn', Mercury:'Virgo', Jupiter:'Cancer', Venus:'Pisces', Saturn:'Libra' };
-    const debil: Record<string, string> = { Sun:'Libra', Moon:'Scorpio', Mars:'Cancer', Mercury:'Pisces', Jupiter:'Capricorn', Venus:'Virgo', Saturn:'Aries' };
+    const exalt: Record<string,string> = { Sun:'Aries', Moon:'Taurus', Mars:'Capricorn', Mercury:'Virgo', Jupiter:'Cancer', Venus:'Pisces', Saturn:'Libra' };
+    const debil: Record<string,string> = { Sun:'Libra', Moon:'Scorpio', Mars:'Cancer', Mercury:'Pisces', Jupiter:'Capricorn', Venus:'Virgo', Saturn:'Aries' };
     const scores = pos.map(p => {
       const s = this.planetaryStrengths[p.planet];
       if (!s) return 50;
@@ -645,7 +527,7 @@ export class AstrologyService {
   private buildRecommendation(dir: string, score: number, a: AstrologyData, warnings: string[]): string {
     let r = dir === 'bullish'
       ? score > 80 ? 'Strong buy signal — planetary alignment favorable for upward movement'
-                   : 'Moderate buy — consider scaled entry with stop-loss'
+                  : 'Moderate buy — consider scaled entry with stop-loss'
       : dir === 'bearish'
       ? score < 20 ? 'Avoid new long positions — cosmic alignment unfavorable'
                    : 'Mild bearish — wait for better entry point'
@@ -654,13 +536,6 @@ export class AstrologyService {
     if (good) r += `. Favorable trading window: ${good.start}–${good.end}`;
     return r;
   }
-}
-
-// ── Helper used by calcMuhuratWindows ─────────────────────────────────────────
-function minutesToHHMM(totalMinutes: number): string {
-  const h = Math.floor(totalMinutes / 60) % 24;
-  const m = Math.round(totalMinutes % 60);
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
 }
 
 export const astrologyService = new AstrologyService();
