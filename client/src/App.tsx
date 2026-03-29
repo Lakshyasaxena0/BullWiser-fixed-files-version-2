@@ -21,8 +21,7 @@ import Header from "@/components/layout/header";
 import ActivitiesPage from "@/pages/activities";
 import TradingHistoryPage from "@/pages/trading-history";
 import CryptoPlans from "./pages/crypto-plans";
-
-// ── Cryptocurrencies page removed — merged into TradingHistoryPage ────────
+import MarketOutlook from "@/pages/market-outlook";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -60,7 +59,6 @@ function Router() {
     );
   }
 
-  // Mobile layout
   if (isMobile) {
     return (
       <Switch>
@@ -70,20 +68,17 @@ function Router() {
         <Route path="/portfolio" component={Portfolio} />
         <Route path="/subscription" component={SubscriptionPage} />
         <Route path="/notifications" component={Notifications} />
+        <Route path="/market-outlook" component={MarketOutlook} />
         <Route path="/auth" component={AuthPage} />
         <Route component={NotFound} />
       </Switch>
     );
   }
 
-  // Desktop layout
   return (
     <div className="flex h-screen bg-gray-50">
       <Sidebar />
-      <div
-        className="flex-1 transition-all duration-300 ease-in-out lg:ml-64"
-        id="main-content"
-      >
+      <div className="flex-1 transition-all duration-300 ease-in-out lg:ml-64" id="main-content">
         <Header />
         <main className="p-6 space-y-6 overflow-y-auto h-full bg-gray-50">
           <Switch>
@@ -99,7 +94,7 @@ function Router() {
             <Route path="/activities" component={ActivitiesPage} />
             <Route path="/activities/:id" component={ActivitiesPage} />
             <Route path="/trading-history" component={TradingHistoryPage} />
-            {/* Redirect old /cryptocurrencies URL to merged Trading History page */}
+            <Route path="/market-outlook" component={MarketOutlook} />
             <Route path="/cryptocurrencies">
               <Redirect to="/trading-history" />
             </Route>
