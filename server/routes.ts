@@ -231,7 +231,7 @@ export function registerRoutes(app: Express): Server {
         });
       }
 
-      const currentPrice = realTimeQuote.adjustedPrice || realTimeQuote.lastPrice;
+      const currentPrice = realTimeQuote.lastPrice;
       const historicalData = await stockDataService.getHistoricalData(upperSymbol, 30);
 
       let enhancedPrediction: any = null;
