@@ -1,69 +1,120 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
+import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Crown, Check, TrendingUp, Shield, Zap, Loader2 } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
+import { Loader2, Check, TrendingUp, Shield, Zap } from "lucide-react";
+
+type TradingMode = 'suggestion' | 'auto';
+type RiskLevel = 'low' | 'medium' | 'high';
+type Duration = 'daily' | 'weekly' | 'monthly' | 'yearly';
+
+interface BillingEstimate {
+  mode: string;
+  tradeType: string;
+  tradesPerDay: number;
+  duration: string;
+  basePrice: number;
+  afterDurationDiscount: number;
+  afterReferralDiscount: number;
+  autoModeSurcharge: number;
+  referralDiscountApplied: number;
+  durationDiscountApplied: number;
+  finalBill: number;
+}
 
 export default function Plans() {
-  const { isAuthenticated } = useAuth();
   const { toast } = useToast();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
 
-  const [selectedPlan, setSelectedPlan] = useState({
-    mode: "suggestion",
-    tradeType: "medium",
-    tradesPerDay: 5,
-    duration: "monthly",
-  });
+  // Form state
+  const [mode, setMode] = useState<TradingMode>('auto');
+  const [riskLevel, setRiskLevel] = useState<RiskLevel>('medium');
+  const [tradesPerDay, setTradesPerDay] = useState(5);
+  const [duration, setDuration] = useState<Duration>('monthly');
 
-  // Current subscriptions
+  // Redirect if not authenticated
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      toast({ title: "Please log in", description: "You need to be logged in to view plans", variant: "destructive" });
+      setTimeout(() => { window.location.href = "/api/login"; }, 500);
+    }
+  }, [isAuthenticated, authLoading, toast]);
+
+  // Fetch current subscriptions
   const { data: subscriptions } = useQuery<any[]>({
     queryKey: ["/api/user/subscriptions"],
     enabled: isAuthenticated,
   });
 
-  // ── FIX: parse response as JSON so estimate fields are available ──────────
-  const { data: estimate, isLoading: estimateLoading } = useQuery<any>({
-    queryKey: ["/api/billing/estimate", selectedPlan],
-    queryFn: async () => {
-      const res = await apiRequest("POST", "/api/billing/estimate", selectedPlan);
-      return res.json();
-    },
-  });
-
-  // Subscribe mutation — also parse JSON response
-  const subscribeMutation = useMutation({
-    mutationFn: async (planData: any) => {
-      const res = await apiRequest("POST", "/api/subscribe", planData);
-      return res.json();
-    },
-    onSuccess: () => {
-      toast({
-        title: "Subscription Activated! 🎉",
-        description: "Your plan is now active. You can start making predictions!",
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/user/subscriptions"] });
-    },
-    onError: () => {
-      toast({
-        title: "Subscription Failed",
-        description: "There was an error creating your subscription. Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const activeSubscription = subscriptions?.find(
-    (s: any) => new Date(s.endTs * 1000) > new Date()
-  ) || null;
+  // Check if user has active subscription
+  const activeSubscription = subscriptions?.find(s => new Date(s.endTs * 1000) > new Date());
   const hasActiveSubscription = !!activeSubscription;
 
-  const planFeatures = {
+  // Fetch billing estimate
+  const { data: estimate, isLoading: estimateLoading } = useQuery<BillingEstimate>({
+    queryKey: ["/api/billing/estimate", { mode, tradeType: riskLevel, tradesPerDay, duration }],
+    queryFn: async () => {
+      const response = await fetch("/api/billing/estimate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, tradeType: riskLevel, tradesPerDay, duration }),
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to fetch estimate");
+      return response.json();
+    },
+    enabled: isAuthenticated,
+  });
+
+  // Subscribe mutation
+  const subscribeMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, tradeType: riskLevel, tradesPerDay, duration }),
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Subscription failed");
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({ 
+        title: "Subscription Successful!", 
+        description: `Your ${mode} plan is now active. Subscription ID: ${data.subscriptionId}` 
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/user/subscriptions"] });
+      setTimeout(() => setLocation('/subscription'), 1500);
+    },
+    onError: (error: Error) => {
+      toast({ 
+        title: "Subscription Failed", 
+        description: error.message || "Please try again", 
+        variant: "destructive" 
+      });
+    },
+  });
+
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  const handleSubscribe = () => {
+    subscribeMutation.mutate();
+  };
+
+  const modeFeatures = {
     suggestion: [
       "AI-powered stock suggestions",
       "Technical analysis insights",
@@ -79,239 +130,304 @@ export default function Plans() {
     ],
   };
 
-  const riskLevels: Record<string, { name: string; color: string }> = {
-    low:    { name: "Conservative", color: "text-green-600" },
-    medium: { name: "Balanced",     color: "text-blue-600"  },
-    high:   { name: "Aggressive",   color: "text-red-600"   },
-  };
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-8">
+      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Subscription Plans</h1>
         <p className="text-gray-600">Choose the perfect plan for your trading needs</p>
       </div>
 
-      {/* Active plan banner */}
+      {/* Active Subscription Banner */}
       {hasActiveSubscription && (
-        <Card className="border-primary bg-primary/5">
-          <CardHeader>
+        <Card className="border-green-200 bg-green-50">
+          <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
-                <Crown className="h-6 w-6 text-primary" />
+                <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center">
+                  <Check className="h-6 w-6 text-white" />
+                </div>
                 <div>
-                  <CardTitle className="text-primary">Current Active Plan</CardTitle>
-                  <p className="text-gray-600 text-sm">
-                    {activeSubscription.mode} mode · {activeSubscription.tradeType} risk · {activeSubscription.tradesPerDay} trades/day
+                  <p className="font-semibold text-green-900">Active Subscription</p>
+                  <p className="text-sm text-green-700">
+                    {activeSubscription.mode} • {activeSubscription.duration} • 
+                    {Math.max(0, Math.ceil((activeSubscription.endTs * 1000 - Date.now()) / (1000 * 60 * 60 * 24)))} days remaining
                   </p>
                 </div>
               </div>
-              <Badge className="bg-green-100 text-green-800">Active</Badge>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-3 gap-4">
-              <div><p className="text-sm text-gray-600">Price</p><p className="text-lg font-semibold">₹{activeSubscription.price}</p></div>
-              <div><p className="text-sm text-gray-600">Duration</p><p className="text-lg font-semibold capitalize">{activeSubscription.duration}</p></div>
-              <div><p className="text-sm text-gray-600">Expires</p><p className="text-lg font-semibold">{new Date(activeSubscription.endTs * 1000).toLocaleDateString("en-IN")}</p></div>
+              <Button variant="outline" onClick={() => setLocation('/subscription')}>
+                View Details
+              </Button>
             </div>
           </CardContent>
         </Card>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Configuration */}
-        <Card>
-          <CardHeader><CardTitle>Configure Your Plan</CardTitle></CardHeader>
-          <CardContent className="space-y-5">
+      {/* Plan Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Configure Your Plan</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Trading Mode */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Trading Mode</label>
+            <Select value={mode} onValueChange={(v) => setMode(v as TradingMode)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="suggestion">
+                  <div className="flex items-center space-x-2">
+                    <TrendingUp className="h-4 w-4" />
+                    <span>Suggestion Mode</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="auto">
+                  <div className="flex items-center space-x-2">
+                    <Zap className="h-4 w-4" />
+                    <span>Auto Mode</span>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-gray-500">
+              {mode === 'suggestion' ? 'Get AI recommendations' : 'Automated signals for direct trading'}
+            </p>
+          </div>
 
+          {/* Risk Level */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Risk Level</label>
+            <Select value={riskLevel} onValueChange={(v) => setRiskLevel(v as RiskLevel)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="low">
+                  <div className="flex items-center justify-between w-full">
+                    <span>🛡️ Balanced (Low Risk)</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="medium">
+                  <div className="flex items-center justify-between w-full">
+                    <span>⚖️ Balanced (Medium Risk)</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="high">
+                  <div className="flex items-center justify-between w-full">
+                    <span>🚀 Aggressive (High Risk)</span>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Trades Per Day */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Trades Per Day</label>
+            <Select value={tradesPerDay.toString()} onValueChange={(v) => setTradesPerDay(parseInt(v))}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+                  <SelectItem key={num} value={num.toString()}>
+                    {num} trades/day
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Billing Period */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Billing Period</label>
+            <Select value={duration} onValueChange={(v) => setDuration(v as Duration)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="daily">Daily</SelectItem>
+                <SelectItem value="weekly">Weekly (5% off)</SelectItem>
+                <SelectItem value="monthly">Monthly (10% off)</SelectItem>
+                <SelectItem value="yearly">Yearly (20% off)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Plan Features */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Plan Features</label>
+            <div className="space-y-2">
+              {modeFeatures[mode].map((feature, index) => (
+                <div key={index} className="flex items-center space-x-2">
+                  <Check className="h-4 w-4 text-green-600" />
+                  <span className="text-sm">{feature}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Plan Summary */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Plan Summary</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {estimateLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            </div>
+          ) : estimate ? (
+            <>
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Base Price</span>
+                  <span className="font-medium">₹{estimate.basePrice.toLocaleString()}</span>
+                </div>
+                {estimate.durationDiscountApplied > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-green-600">Duration Discount ({estimate.durationDiscountApplied}%)</span>
+                    <span className="text-green-600">-₹{(estimate.basePrice - estimate.afterDurationDiscount).toLocaleString()}</span>
+                  </div>
+                )}
+                {estimate.autoModeSurcharge > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600">Auto Mode Surcharge</span>
+                    <span className="font-medium">+₹{estimate.autoModeSurcharge.toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-4 border-t">
+                <div className="flex justify-between items-center">
+                  <span className="text-lg font-bold">Total</span>
+                  <span className="text-2xl font-bold text-primary">₹{estimate.finalBill.toLocaleString()}</span>
+                </div>
+              </div>
+
+              <div className="pt-4 space-y-2 text-xs text-gray-600">
+                <div className="flex justify-between">
+                  <span>Mode:</span>
+                  <span className="font-medium capitalize">{mode}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Risk Level:</span>
+                  <span className="font-medium capitalize">{riskLevel}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Trades:</span>
+                  <span className="font-medium">{tradesPerDay} per day</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Duration:</span>
+                  <span className="font-medium capitalize">{duration}</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <p className="text-center text-gray-500">Unable to load estimate</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Mode Comparison */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card className={mode === 'suggestion' ? 'border-primary' : ''}>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <TrendingUp className="h-5 w-5" />
+                <CardTitle className="text-lg">Suggestion Mode</CardTitle>
+              </div>
+              {mode === 'suggestion' && <Badge>Selected</Badge>}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {modeFeatures.suggestion.map((feature, index) => (
+              <div key={index} className="flex items-center space-x-2">
+                <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
+                <span className="text-sm">{feature}</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card className={mode === 'auto' ? 'border-primary' : ''}>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Zap className="h-5 w-5" />
+                <CardTitle className="text-lg">Auto Mode</CardTitle>
+              </div>
+              {mode === 'auto' && <Badge>Selected</Badge>}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {modeFeatures.auto.map((feature, index) => (
+              <div key={index} className="flex items-center space-x-2">
+                <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
+                <span className="text-sm">{feature}</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Subscribe Button */}
+      <Card className="bg-gradient-to-r from-primary/5 to-primary/10 border-primary/20">
+        <CardContent className="pt-6">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
             <div>
-              <label className="text-sm font-medium mb-2 block">Trading Mode</label>
-              <Select value={selectedPlan.mode} onValueChange={v => setSelectedPlan(p => ({ ...p, mode: v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="suggestion">Suggestion Mode</SelectItem>
-                  <SelectItem value="auto">Auto Mode</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-gray-500 mt-1">
-                {selectedPlan.mode === "auto" ? "Automated signals for direct trading" : "AI recommendations for manual trading"}
+              <h3 className="font-semibold text-lg">
+                {hasActiveSubscription ? 'Update Your Plan' : 'Start Your Journey'}
+              </h3>
+              <p className="text-sm text-gray-600">
+                {hasActiveSubscription 
+                  ? 'Upgrade or modify your current subscription'
+                  : 'Get access to AI-powered predictions and market outlook'}
               </p>
             </div>
+            <Button
+              size="lg"
+              className="w-full md:w-auto"
+              onClick={handleSubscribe}
+              disabled={subscribeMutation.isPending}
+            >
+              {subscribeMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Processing...
+                </>
+              ) : hasActiveSubscription ? (
+                'Update Plan'
+              ) : (
+                'Subscribe Now'
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
-            <div>
-              <label className="text-sm font-medium mb-2 block">Risk Level</label>
-              <Select value={selectedPlan.tradeType} onValueChange={v => setSelectedPlan(p => ({ ...p, tradeType: v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="low"><div className="flex items-center gap-2"><Shield className="h-4 w-4 text-green-600" /><span>Conservative</span></div></SelectItem>
-                  <SelectItem value="medium"><div className="flex items-center gap-2"><TrendingUp className="h-4 w-4 text-blue-600" /><span>Balanced</span></div></SelectItem>
-                  <SelectItem value="high"><div className="flex items-center gap-2"><Zap className="h-4 w-4 text-red-600" /><span>Aggressive</span></div></SelectItem>
-                </SelectContent>
-              </Select>
+      {/* Disclaimer */}
+      <Card className="bg-amber-50 border-amber-200">
+        <CardContent className="pt-6">
+          <div className="flex items-start space-x-3">
+            <Shield className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="text-sm text-amber-800">
+              <p className="font-medium mb-1">Investment Disclaimer</p>
+              <p className="text-xs">
+                BullWiser combines statistical analysis (RSI, MACD, Moving Averages) and Vedic astrology 
+                in a 50/50 model. This is not financial advice. Always do your own research before investing. 
+                Past performance does not guarantee future results.
+              </p>
             </div>
-
-            <div>
-              <label className="text-sm font-medium mb-2 block">Trades Per Day</label>
-              <Select value={selectedPlan.tradesPerDay.toString()} onValueChange={v => setSelectedPlan(p => ({ ...p, tradesPerDay: parseInt(v) }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="2">2 trades/day</SelectItem>
-                  <SelectItem value="5">5 trades/day</SelectItem>
-                  <SelectItem value="10">10 trades/day</SelectItem>
-                  <SelectItem value="20">20 trades/day</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <label className="text-sm font-medium mb-2 block">Billing Period</label>
-              <Select value={selectedPlan.duration} onValueChange={v => setSelectedPlan(p => ({ ...p, duration: v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="daily">Daily</SelectItem>
-                  <SelectItem value="weekly">Weekly (5% off)</SelectItem>
-                  <SelectItem value="monthly">Monthly (10% off)</SelectItem>
-                  <SelectItem value="yearly">Yearly (20% off)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <h4 className="font-medium mb-3">Plan Features</h4>
-              <div className="space-y-2">
-                {planFeatures[selectedPlan.mode as keyof typeof planFeatures].map((f, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
-                    <span className="text-sm">{f}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Pricing & Subscribe */}
-        <Card>
-          <CardHeader><CardTitle>Plan Summary</CardTitle></CardHeader>
-          <CardContent className="space-y-5">
-            {estimateLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              </div>
-            ) : estimate ? (
-              <>
-                {/* Price breakdown */}
-                <div className="p-4 bg-gray-50 rounded-lg space-y-3">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Base Price</span>
-                    <span className="font-medium">₹{estimate.basePrice?.toLocaleString("en-IN")}</span>
-                  </div>
-
-                  {estimate.durationDiscountApplied > 0 && (
-                    <div className="flex justify-between text-sm text-green-600">
-                      <span>Duration Discount ({estimate.durationDiscountApplied}%)</span>
-                      <span>-₹{(estimate.basePrice - estimate.afterDurationDiscount)?.toLocaleString("en-IN")}</span>
-                    </div>
-                  )}
-
-                  {estimate.autoModeSurcharge > 0 && (
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-600">Auto Mode Surcharge</span>
-                      <span>+₹{estimate.autoModeSurcharge?.toLocaleString("en-IN")}</span>
-                    </div>
-                  )}
-
-                  <hr />
-                  <div className="flex justify-between font-bold text-lg">
-                    <span>Total</span>
-                    <span className="text-primary">₹{estimate.finalBill?.toLocaleString("en-IN")}</span>
-                  </div>
-                </div>
-
-                {/* Plan details */}
-                <div className="space-y-1.5 text-sm text-gray-600">
-                  <p><strong className="text-gray-900">Mode:</strong> {selectedPlan.mode === "auto" ? "Auto Trading" : "Suggestion"}</p>
-                  <p><strong className="text-gray-900">Risk Level:</strong> {riskLevels[selectedPlan.tradeType]?.name}</p>
-                  <p><strong className="text-gray-900">Trades:</strong> {selectedPlan.tradesPerDay} per day</p>
-                  <p><strong className="text-gray-900">Duration:</strong> <span className="capitalize">{selectedPlan.duration}</span></p>
-                </div>
-
-                {/* ── Subscribe button ── */}
-                {hasActiveSubscription ? (
-                  <div className="space-y-3">
-                    <Button className="w-full" size="lg" disabled>
-                      <Check className="h-4 w-4 mr-2" />
-                      Plan Already Active
-                    </Button>
-                    <p className="text-xs text-center text-gray-500">
-                      Your current plan is active until{" "}
-                      <strong>{new Date(activeSubscription.endTs * 1000).toLocaleDateString("en-IN")}</strong>.
-                      New plans can be subscribed after expiry.
-                    </p>
-                  </div>
-                ) : (
-                  <Button
-                    className="w-full bg-primary hover:bg-primary/90 text-white"
-                    size="lg"
-                    onClick={() => subscribeMutation.mutate(selectedPlan)}
-                    disabled={subscribeMutation.isPending}
-                  >
-                    {subscribeMutation.isPending ? (
-                      <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Processing...</>
-                    ) : (
-                      <>
-                        <Crown className="h-4 w-4 mr-2" />
-                        Subscribe for ₹{estimate.finalBill?.toLocaleString("en-IN")}
-                      </>
-                    )}
-                  </Button>
-                )}
-              </>
-            ) : (
-              <p className="text-center text-gray-500 py-8">Unable to load pricing. Please refresh.</p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Plan comparison */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <TrendingUp className="h-5 w-5" />Suggestion Mode
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {planFeatures.suggestion.map((f, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Check className="h-4 w-4 text-green-600" /><span className="text-sm">{f}</span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-primary">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Crown className="h-5 w-5 text-primary" />Auto Mode
-              <Badge className="bg-primary text-white ml-1">Premium</Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {planFeatures.auto.map((f, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Check className="h-4 w-4 text-green-600" /><span className="text-sm">{f}</span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
