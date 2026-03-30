@@ -1,204 +1,433 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
-import { useEffect } from "react";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { Crown, CreditCard, Activity } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Loader2, Check, TrendingUp, Shield, Zap } from "lucide-react";
 
-export default function Subscription() {
+type TradingMode = 'suggestion' | 'auto';
+type RiskLevel = 'low' | 'medium' | 'high';
+type Duration = 'daily' | 'weekly' | 'monthly' | 'yearly';
+
+interface BillingEstimate {
+  mode: string;
+  tradeType: string;
+  tradesPerDay: number;
+  duration: string;
+  basePrice: number;
+  afterDurationDiscount: number;
+  afterReferralDiscount: number;
+  autoModeSurcharge: number;
+  referralDiscountApplied: number;
+  durationDiscountApplied: number;
+  finalBill: number;
+}
+
+export default function Plans() {
   const { toast } = useToast();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
 
+  // Form state
+  const [mode, setMode] = useState<TradingMode>('auto');
+  const [riskLevel, setRiskLevel] = useState<RiskLevel>('medium');
+  const [tradesPerDay, setTradesPerDay] = useState(5);
+  const [duration, setDuration] = useState<Duration>('monthly');
+
+  // Redirect if not authenticated
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      toast({ title: "Unauthorized", description: "You are logged out.", variant: "destructive" });
+    if (!authLoading && !isAuthenticated) {
+      toast({ title: "Please log in", description: "You need to be logged in to view plans", variant: "destructive" });
       setTimeout(() => { window.location.href = "/api/login"; }, 500);
     }
-  }, [isAuthenticated, isLoading, toast]);
+  }, [isAuthenticated, authLoading, toast]);
 
-  const { data: subscriptions, isLoading: subLoading } = useQuery<any[]>({
+  // Fetch current subscriptions
+  const { data: subscriptions } = useQuery<any[]>({
     queryKey: ["/api/user/subscriptions"],
     enabled: isAuthenticated,
   });
 
-  const { data: activePredictions } = useQuery<any[]>({
-    queryKey: ["/api/user/predictions/active"],
+  // Check if user has active subscription
+  const activeSubscription = subscriptions?.find(s => new Date(s.endTs * 1000) > new Date());
+  const hasActiveSubscription = !!activeSubscription;
+
+  // Fetch billing estimate
+  const { data: estimate, isLoading: estimateLoading } = useQuery<BillingEstimate>({
+    queryKey: ["/api/billing/estimate", { mode, tradeType: riskLevel, tradesPerDay, duration }],
+    queryFn: async () => {
+      const response = await fetch("/api/billing/estimate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, tradeType: riskLevel, tradesPerDay, duration }),
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to fetch estimate");
+      return response.json();
+    },
     enabled: isAuthenticated,
   });
 
-  const { data: allPredictions } = useQuery<any[]>({
-    queryKey: ["/api/user/predictions"],
-    enabled: isAuthenticated,
+  // Subscribe mutation
+  const subscribeMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, tradeType: riskLevel, tradesPerDay, duration }),
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Subscription failed");
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({ 
+        title: "Subscription Successful!", 
+        description: `Your ${mode} plan is now active. Subscription ID: ${data.subscriptionId}` 
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/user/subscriptions"] });
+      setTimeout(() => setLocation('/subscription'), 1500);
+    },
+    onError: (error: Error) => {
+      toast({ 
+        title: "Subscription Failed", 
+        description: error.message || "Please try again", 
+        variant: "destructive" 
+      });
+    },
   });
 
-  const { data: allFeedback } = useQuery<any[]>({
-    queryKey: ["/api/user/feedback"],
-    enabled: isAuthenticated,
-  });
-
-  if (isLoading || subLoading) {
-    return <div className="flex items-center justify-center h-full"><div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" /></div>;
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
   }
 
-  const activeSubscription = subscriptions?.find(s => new Date(s.endTs * 1000) > new Date()) || null;
-  const usagePercentage = activeSubscription ? Math.min(((activePredictions?.length || 0) / 200) * 100, 100) : 0;
+  const handleSubscribe = () => {
+    subscribeMutation.mutate();
+  };
 
-  // Real accuracy from feedback
-  const totalPredictions = allPredictions?.length || 0;
-  let accuracyRate = "—";
-  let avgConfidence = "—";
-
-  if ((allFeedback?.length || 0) > 0) {
-    const useful = allFeedback!.filter(f => f.useful === 1).length;
-    accuracyRate = `${((useful / allFeedback!.length) * 100).toFixed(1)}%`;
-  } else if (totalPredictions > 0) {
-    accuracyRate = "Pending feedback";
-  }
-
-  if (totalPredictions > 0) {
-    const avg = allPredictions!.reduce((sum, p) => sum + (p.confidence || 0), 0) / totalPredictions;
-    avgConfidence = `${avg.toFixed(1)}%`;
-  }
+  const modeFeatures = {
+    suggestion: [
+      "AI-powered stock suggestions",
+      "Technical analysis insights",
+      "Risk assessment",
+      "Basic market alerts",
+    ],
+    auto: [
+      "All suggestion features",
+      "Automated trading signals",
+      "Advanced risk management",
+      "Priority market alerts",
+      "Portfolio optimization",
+    ],
+  };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-8">
+      {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Subscription</h1>
-        <p className="text-gray-600">Manage your subscription plan and billing information</p>
+        <h1 className="text-2xl font-bold text-gray-900">Subscription Plans</h1>
+        <p className="text-gray-600">Choose the perfect plan for your trading needs</p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          {activeSubscription ? (
-            <Card className="relative overflow-hidden">
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-12 h-12 bg-gradient-to-br from-primary to-primary-light rounded-lg flex items-center justify-center">
-                      <Crown className="h-6 w-6 text-white" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-xl">Active Plan</CardTitle>
-                      <p className="text-gray-600">{activeSubscription.mode} mode · {activeSubscription.tradeType} risk</p>
-                    </div>
+      {/* Active Subscription Banner */}
+      {hasActiveSubscription && (
+        <Card className="border-green-200 bg-green-50">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center">
+                  <Check className="h-6 w-6 text-white" />
+                </div>
+                <div>
+                  <p className="font-semibold text-green-900">Active Subscription</p>
+                  <p className="text-sm text-green-700">
+                    {activeSubscription.mode} • {activeSubscription.duration} • 
+                    {Math.max(0, Math.ceil((activeSubscription.endTs * 1000 - Date.now()) / (1000 * 60 * 60 * 24)))} days remaining
+                  </p>
+                </div>
+              </div>
+              <Button variant="outline" onClick={() => setLocation('/subscription')}>
+                View Details
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Plan Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Configure Your Plan</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Trading Mode */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Trading Mode</label>
+            <Select value={mode} onValueChange={(v) => setMode(v as TradingMode)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="suggestion">
+                  <div className="flex items-center space-x-2">
+                    <TrendingUp className="h-4 w-4" />
+                    <span>Suggestion Mode</span>
                   </div>
-                  <Badge className="bg-green-100 text-green-800">Active</Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
-                  <div><p className="text-2xl font-bold">₹{activeSubscription.price}</p><p className="text-sm text-gray-600">per {activeSubscription.duration}</p></div>
-                  <div><p className="text-2xl font-bold text-primary">{activeSubscription.tradesPerDay}</p><p className="text-sm text-gray-600">trades/day</p></div>
-                  <div><p className="text-2xl font-bold">{activePredictions?.length || 0}/200</p><p className="text-sm text-gray-600">predictions</p></div>
-                  <div>
-                    <p className="text-2xl font-bold text-green-600">
-                      {Math.max(0, Math.ceil((activeSubscription.endTs * 1000 - Date.now()) / (1000 * 60 * 60 * 24)))}
-                    </p>
-                    <p className="text-sm text-gray-600">days left</p>
+                </SelectItem>
+                <SelectItem value="auto">
+                  <div className="flex items-center space-x-2">
+                    <Zap className="h-4 w-4" />
+                    <span>Auto Mode</span>
                   </div>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between"><span className="text-sm text-gray-600">Usage</span><span className="text-sm font-medium">{Math.round(usagePercentage)}%</span></div>
-                  <Progress value={usagePercentage} className="h-2" />
-                </div>
-                <Button className="w-full" onClick={() => setLocation('/plans')}>
-                  <CreditCard className="h-4 w-4 mr-2" />Upgrade Plan
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <Card className="p-12 text-center">
-              <div className="space-y-4">
-                <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto">
-                  <Crown className="h-8 w-8 text-gray-400" />
-                </div>
-                <h3 className="text-lg font-semibold">No Active Subscription</h3>
-                <p className="text-gray-600">Choose a plan to start making predictions.</p>
-                <Button onClick={() => setLocation('/plans')}>Choose a Plan</Button>
-              </div>
-            </Card>
-          )}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-gray-500">
+              {mode === 'suggestion' ? 'Get AI recommendations' : 'Automated signals for direct trading'}
+            </p>
+          </div>
 
-          {/* Billing History */}
-          <Card>
-            <CardHeader><CardTitle>Billing History</CardTitle></CardHeader>
-            <CardContent>
-              {subscriptions && subscriptions.length > 0 ? (
-                <div className="space-y-4">
-                  {subscriptions.map((s: any) => (
-                    <div key={s.id} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
-                      <div>
-                        <p className="font-medium capitalize">{s.mode} · {s.tradeType} risk</p>
-                        <p className="text-sm text-gray-600">
-                          {new Date(s.startTs * 1000).toLocaleDateString()} — {new Date(s.endTs * 1000).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-semibold">₹{s.price}</p>
-                        <Badge variant="outline">{new Date(s.endTs * 1000) > new Date() ? "Active" : "Expired"}</Badge>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-gray-600 text-center py-8">No billing history available</p>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+          {/* Risk Level */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Risk Level</label>
+            <Select value={riskLevel} onValueChange={(v) => setRiskLevel(v as RiskLevel)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="low">
+                  <div className="flex items-center justify-between w-full">
+                    <span>🛡️ Balanced (Low Risk)</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="medium">
+                  <div className="flex items-center justify-between w-full">
+                    <span>⚖️ Balanced (Medium Risk)</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="high">
+                  <div className="flex items-center justify-between w-full">
+                    <span>🚀 Aggressive (High Risk)</span>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
-        {/* Sidebar */}
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center"><Activity className="h-5 w-5 mr-2" />Usage Statistics</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex justify-between">
-                <span className="text-gray-600">Total Predictions</span>
-                <span className="font-semibold">{totalPredictions}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Active Predictions</span>
-                <span className="font-semibold text-blue-600">{activePredictions?.length || 0}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Accuracy Rate</span>
-                <span className="font-semibold text-green-600">{accuracyRate}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Avg Confidence</span>
-                <span className="font-semibold text-blue-600">{avgConfidence}</span>
-              </div>
-            </CardContent>
-          </Card>
+          {/* Trades Per Day */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Trades Per Day</label>
+            <Select value={tradesPerDay.toString()} onValueChange={(v) => setTradesPerDay(parseInt(v))}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+                  <SelectItem key={num} value={num.toString()}>
+                    {num} trades/day
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Card>
-            <CardHeader><CardTitle>Plan Features</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              {["200 predictions/month", "Real-time market data", "Price alerts & notifications", "Advanced charting tools", "Priority customer support"].map(f => (
-                <div key={f} className="flex items-center space-x-2">
-                  <div className="w-2 h-2 bg-green-500 rounded-full" />
-                  <span className="text-sm">{f}</span>
+          {/* Billing Period */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Billing Period</label>
+            <Select value={duration} onValueChange={(v) => setDuration(v as Duration)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="daily">Daily</SelectItem>
+                <SelectItem value="weekly">Weekly (5% off)</SelectItem>
+                <SelectItem value="monthly">Monthly (10% off)</SelectItem>
+                <SelectItem value="yearly">Yearly (20% off)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Plan Features */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Plan Features</label>
+            <div className="space-y-2">
+              {modeFeatures[mode].map((feature, index) => (
+                <div key={index} className="flex items-center space-x-2">
+                  <Check className="h-4 w-4 text-green-600" />
+                  <span className="text-sm">{feature}</span>
                 </div>
               ))}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-          <Card className="text-center p-6">
-            <h3 className="font-semibold mb-2">Need Help?</h3>
-            <p className="text-sm text-gray-600 mb-4">Contact our support team for billing questions.</p>
-            <Button variant="outline" size="sm" onClick={() => toast({ title: "Support", description: "Email support@bullwiser.com" })}>
-              Contact Support
-            </Button>
-          </Card>
-        </div>
+      {/* Plan Summary */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Plan Summary</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {estimateLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            </div>
+          ) : estimate ? (
+            <>
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Base Price</span>
+                  <span className="font-medium">₹{estimate.basePrice.toLocaleString()}</span>
+                </div>
+                {estimate.durationDiscountApplied > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-green-600">Duration Discount ({estimate.durationDiscountApplied}%)</span>
+                    <span className="text-green-600">-₹{(estimate.basePrice - estimate.afterDurationDiscount).toLocaleString()}</span>
+                  </div>
+                )}
+                {estimate.autoModeSurcharge > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600">Auto Mode Surcharge</span>
+                    <span className="font-medium">+₹{estimate.autoModeSurcharge.toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-4 border-t">
+                <div className="flex justify-between items-center">
+                  <span className="text-lg font-bold">Total</span>
+                  <span className="text-2xl font-bold text-primary">₹{estimate.finalBill.toLocaleString()}</span>
+                </div>
+              </div>
+
+              <div className="pt-4 space-y-2 text-xs text-gray-600">
+                <div className="flex justify-between">
+                  <span>Mode:</span>
+                  <span className="font-medium capitalize">{mode}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Risk Level:</span>
+                  <span className="font-medium capitalize">{riskLevel}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Trades:</span>
+                  <span className="font-medium">{tradesPerDay} per day</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Duration:</span>
+                  <span className="font-medium capitalize">{duration}</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <p className="text-center text-gray-500">Unable to load estimate</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Mode Comparison */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card className={mode === 'suggestion' ? 'border-primary' : ''}>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <TrendingUp className="h-5 w-5" />
+                <CardTitle className="text-lg">Suggestion Mode</CardTitle>
+              </div>
+              {mode === 'suggestion' && <Badge>Selected</Badge>}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {modeFeatures.suggestion.map((feature, index) => (
+              <div key={index} className="flex items-center space-x-2">
+                <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
+                <span className="text-sm">{feature}</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card className={mode === 'auto' ? 'border-primary' : ''}>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Zap className="h-5 w-5" />
+                <CardTitle className="text-lg">Auto Mode</CardTitle>
+              </div>
+              {mode === 'auto' && <Badge>Selected</Badge>}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {modeFeatures.auto.map((feature, index) => (
+              <div key={index} className="flex items-center space-x-2">
+                <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
+                <span className="text-sm">{feature}</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       </div>
+
+      {/* Subscribe Button */}
+      <Card className="bg-gradient-to-r from-primary/5 to-primary/10 border-primary/20">
+        <CardContent className="pt-6">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div>
+              <h3 className="font-semibold text-lg">
+                {hasActiveSubscription ? 'Update Your Plan' : 'Start Your Journey'}
+              </h3>
+              <p className="text-sm text-gray-600">
+                {hasActiveSubscription 
+                  ? 'Upgrade or modify your current subscription'
+                  : 'Get access to AI-powered predictions and market outlook'}
+              </p>
+            </div>
+            <Button
+              size="lg"
+              className="w-full md:w-auto"
+              onClick={handleSubscribe}
+              disabled={subscribeMutation.isPending}
+            >
+              {subscribeMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Processing...
+                </>
+              ) : hasActiveSubscription ? (
+                'Update Plan'
+              ) : (
+                'Subscribe Now'
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Disclaimer */}
+      <Card className="bg-amber-50 border-amber-200">
+        <CardContent className="pt-6">
+          <div className="flex items-start space-x-3">
+            <Shield className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="text-sm text-amber-800">
+              <p className="font-medium mb-1">Investment Disclaimer</p>
+              <p className="text-xs">
+                BullWiser combines statistical analysis (RSI, MACD, Moving Averages) and Vedic astrology 
+                in a 50/50 model. This is not financial advice. Always do your own research before investing. 
+                Past performance does not guarantee future results.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
