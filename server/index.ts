@@ -4,6 +4,8 @@ import { setupVite, serveStatic, log } from "./vite";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
+import cron from "node-cron";
+import { predictionMonitoringService } from "./predictionMonitoringService";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -105,6 +107,29 @@ app.use((req: Request, res: Response, next: NextFunction) => {
       });
     }
   }
+
+  // ─── CRON JOB: Prediction Monitoring ────────────────────────────────────────
+  // Run daily at midnight to check predictions that reached their target date
+  cron.schedule('0 0 * * *', async () => {
+    log('🔄 [Cron] Starting daily prediction monitoring...');
+    try {
+      await predictionMonitoringService.monitorDuePredictions();
+      log('✅ [Cron] Daily prediction monitoring completed successfully');
+    } catch (error) {
+      log('❌ [Cron] Prediction monitoring failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      console.error('[Cron] Full error:', error);
+    }
+  });
+
+  // Optional: Run every 6 hours for more frequent checks
+  // Uncomment if you want more frequent monitoring
+  // cron.schedule('0 */6 * * *', async () => {
+  //   log('🔄 [Cron] Running 6-hour prediction check...');
+  //   await predictionMonitoringService.monitorDuePredictions();
+  // });
+
+  log('⏰ Prediction monitoring cron job scheduled (daily at midnight)');
+  // ─────────────────────────────────────────────────────────────────────────────
 
   const port = parseInt(process.env.PORT || "5000", 10);
   server.listen({ port, host: "0.0.0.0", reusePort: true }, () => {
