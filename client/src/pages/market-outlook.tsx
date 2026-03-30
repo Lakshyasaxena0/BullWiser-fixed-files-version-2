@@ -1,469 +1,507 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
-import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  TrendingUp, TrendingDown, Minus, RefreshCw, Lock,
-  BarChart2, Star, AlertTriangle, Clock, Calendar,
-} from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TrendingUp, TrendingDown, Minus, RefreshCw, Lock } from "lucide-react";
+import { useLocation } from "wouter";
 
-// ── Types ────────────────────────────────────────────────────────────────────
+type Horizon = '1w' | '2w' | '3w' | '1m' | '2m' | '4m' | '6m' | '1y';
+
 interface SectorOutlook {
-  sector: string; signal: string; strength: string; confidence: number;
-  changeEstimate: number; rangeLow: number; rangeHigh: number;
-  statsScore: number; astroScore: number;
-  keyFactors: string[]; risks: string[];
-  topStock: string; topStockChange: number;
-  horizon: string; targetDate: string;
+  sector: string;
+  signal: 'bullish' | 'bearish' | 'neutral';
+  strength: 'strong' | 'moderate' | 'weak';
+  confidence: number;
+  changeEstimate: number;
+  rangeLow: number;
+  rangeHigh: number;
+  statsScore: number;
+  astroScore: number;
+  keyFactors: string[];
+  risks: string[];
+  topStock: string;
+  topStockChange: number;
 }
 
 interface CryptoOutlook {
-  symbol: string; name: string; signal: string; strength: string;
-  confidence: number; changeEstimate: number; rangeLow: number; rangeHigh: number;
-  currentPrice: number; statsScore: number; astroScore: number;
-  keyFactors: string[]; risks: string[];
-  horizon: string; targetDate: string;
+  symbol: string;
+  name: string;
+  signal: 'bullish' | 'bearish' | 'neutral';
+  strength: 'strong' | 'moderate' | 'weak';
+  confidence: number;
+  changeEstimate: number;
+  rangeLow: number;
+  rangeHigh: number;
+  currentPrice: number;
+  statsScore: number;
+  astroScore: number;
+  keyFactors: string[];
+  risks: string[];
 }
 
-interface OutlookData {
-  generatedAt: string; horizon: string; targetDate: string;
-  daysAhead: number; marketSummary: string;
-  stocks?: { bullish: SectorOutlook[]; bearish: SectorOutlook[]; neutral: SectorOutlook[]; all: SectorOutlook[] };
-  crypto?: { bullish: CryptoOutlook[]; bearish: CryptoOutlook[]; neutral: CryptoOutlook[]; all: CryptoOutlook[] };
-  stocksLocked?: boolean; cryptoLocked?: boolean;
-}
-
-const HORIZONS = [
-  { value: '1w',  label: '1 Week' },
-  { value: '2w',  label: '2 Weeks' },
-  { value: '3w',  label: '3 Weeks' },
-  { value: '1m',  label: '1 Month' },
-  { value: '2m',  label: '2 Months' },
-  { value: '4m',  label: '4 Months' },
-  { value: '6m',  label: '6 Months' },
-  { value: '1y',  label: '1 Year' },
-];
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-const signalColor = (signal: string) =>
-  signal === 'bullish' ? 'text-green-600' : signal === 'bearish' ? 'text-red-600' : 'text-gray-500';
-
-const signalBg = (signal: string) =>
-  signal === 'bullish' ? 'bg-green-50 border-green-200' : signal === 'bearish' ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200';
-
-const signalBadge = (signal: string) =>
-  signal === 'bullish' ? 'bg-green-100 text-green-800' : signal === 'bearish' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700';
-
-const strengthBadge = (strength: string) =>
-  strength === 'strong' ? 'bg-purple-100 text-purple-800' : strength === 'moderate' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600';
-
-const SignalIcon = ({ signal }: { signal: string }) =>
-  signal === 'bullish' ? <TrendingUp className="h-5 w-5 text-green-600" />
-  : signal === 'bearish' ? <TrendingDown className="h-5 w-5 text-red-600" />
-  : <Minus className="h-5 w-5 text-gray-400" />;
-
-const pct = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
-
-// ── Score bar ────────────────────────────────────────────────────────────────
-function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <div className="space-y-1">
-      <div className="flex justify-between text-xs text-gray-500">
-        <span>{label}</span><span>{value.toFixed(0)}/100</span>
-      </div>
-      <div className="w-full bg-gray-200 rounded-full h-1.5">
-        <div className={`h-1.5 rounded-full ${color}`} style={{ width: `${value}%` }} />
-      </div>
-    </div>
-  );
-}
-
-// ── Sector card ───────────────────────────────────────────────────────────────
-function SectorCard({ item }: { item: SectorOutlook }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <Card className={`border ${signalBg(item.signal)} transition-shadow hover:shadow-md`}>
-      <CardHeader className="pb-2">
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-2">
-            <SignalIcon signal={item.signal} />
-            <div>
-              <CardTitle className="text-base">{item.sector}</CardTitle>
-              <p className="text-xs text-gray-500 mt-0.5">Top: {item.topStock}</p>
-            </div>
-          </div>
-          <div className="text-right">
-            <p className={`text-lg font-bold ${signalColor(item.signal)}`}>{pct(item.changeEstimate)}</p>
-            <p className="text-xs text-gray-400">expected</p>
-          </div>
-        </div>
-        <div className="flex gap-1.5 mt-2 flex-wrap">
-          <Badge className={signalBadge(item.signal)}>{item.signal}</Badge>
-          <Badge className={strengthBadge(item.strength)}>{item.strength}</Badge>
-          <Badge variant="outline" className="text-xs">{item.confidence}% conf.</Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {/* Range */}
-        <div className="flex justify-between text-xs bg-white rounded-lg p-2 border border-gray-100">
-          <span className="text-red-500 font-medium">Low: {pct(item.rangeLow)}</span>
-          <span className="text-gray-400">→</span>
-          <span className="text-green-600 font-medium">High: {pct(item.rangeHigh)}</span>
-        </div>
-
-        {/* Score bars */}
-        <div className="space-y-1.5">
-          <ScoreBar label="Statistical" value={item.statsScore} color="bg-blue-500" />
-          <ScoreBar label="Astrological" value={item.astroScore} color="bg-purple-500" />
-        </div>
-
-        {/* Expand toggle */}
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="text-xs text-blue-500 hover:underline w-full text-left"
-        >
-          {expanded ? '▲ Hide details' : '▼ Show details'}
-        </button>
-
-        {expanded && (
-          <div className="space-y-2">
-            {item.keyFactors.length > 0 && (
-              <div>
-                <p className="text-xs font-semibold text-gray-600 mb-1 flex items-center gap-1"><Star className="h-3 w-3" /> Key Factors</p>
-                <ul className="space-y-1">
-                  {item.keyFactors.map((f, i) => (
-                    <li key={i} className="text-xs text-gray-600 flex items-start gap-1"><span className="text-blue-400 font-bold mt-0.5">→</span>{f}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {item.risks.length > 0 && (
-              <div>
-                <p className="text-xs font-semibold text-amber-600 mb-1 flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> Risks</p>
-                <ul className="space-y-1">
-                  {item.risks.map((r, i) => (
-                    <li key={i} className="text-xs text-amber-700 flex items-start gap-1"><span className="font-bold mt-0.5">⚠</span>{r}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Crypto card ───────────────────────────────────────────────────────────────
-function CryptoCard({ item }: { item: CryptoOutlook }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <Card className={`border ${signalBg(item.signal)} transition-shadow hover:shadow-md`}>
-      <CardHeader className="pb-2">
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-2">
-            <SignalIcon signal={item.signal} />
-            <div>
-              <CardTitle className="text-base">{item.symbol}</CardTitle>
-              <p className="text-xs text-gray-500 mt-0.5">{item.name}{item.currentPrice > 0 ? ` · $${item.currentPrice.toLocaleString()}` : ''}</p>
-            </div>
-          </div>
-          <div className="text-right">
-            <p className={`text-lg font-bold ${signalColor(item.signal)}`}>{pct(item.changeEstimate)}</p>
-            <p className="text-xs text-gray-400">expected</p>
-          </div>
-        </div>
-        <div className="flex gap-1.5 mt-2 flex-wrap">
-          <Badge className={signalBadge(item.signal)}>{item.signal}</Badge>
-          <Badge className={strengthBadge(item.strength)}>{item.strength}</Badge>
-          <Badge variant="outline" className="text-xs">{item.confidence}% conf.</Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex justify-between text-xs bg-white rounded-lg p-2 border border-gray-100">
-          <span className="text-red-500 font-medium">Low: {pct(item.rangeLow)}</span>
-          <span className="text-gray-400">→</span>
-          <span className="text-green-600 font-medium">High: {pct(item.rangeHigh)}</span>
-        </div>
-        <div className="space-y-1.5">
-          <ScoreBar label="Statistical" value={item.statsScore} color="bg-blue-500" />
-          <ScoreBar label="Astrological" value={item.astroScore} color="bg-purple-500" />
-        </div>
-        <button onClick={() => setExpanded(!expanded)} className="text-xs text-blue-500 hover:underline w-full text-left">
-          {expanded ? '▲ Hide details' : '▼ Show details'}
-        </button>
-        {expanded && (
-          <div className="space-y-2">
-            {item.keyFactors.length > 0 && (
-              <div>
-                <p className="text-xs font-semibold text-gray-600 mb-1 flex items-center gap-1"><Star className="h-3 w-3" />Key Factors</p>
-                <ul className="space-y-1">{item.keyFactors.map((f, i) => <li key={i} className="text-xs text-gray-600 flex items-start gap-1"><span className="text-blue-400 font-bold">→</span>{f}</li>)}</ul>
-              </div>
-            )}
-            {item.risks.length > 0 && (
-              <div>
-                <p className="text-xs font-semibold text-amber-600 mb-1 flex items-center gap-1"><AlertTriangle className="h-3 w-3" />Risks</p>
-                <ul className="space-y-1">{item.risks.map((r, i) => <li key={i} className="text-xs text-amber-700 flex items-start gap-1"><span className="font-bold">⚠</span>{r}</li>)}</ul>
-              </div>
-            )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Main Page ─────────────────────────────────────────────────────────────────
 export default function MarketOutlook() {
-  const { toast } = useToast();
-  const { isAuthenticated, isLoading } = useAuth();
-  const [activeTab, setActiveTab] = useState<'stocks' | 'crypto'>('stocks');
-  const [horizon, setHorizon] = useState('1m');
-  const [data, setData] = useState<OutlookData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [subError, setSubError] = useState<string | null>(null);
+  const { isAuthenticated } = useAuth();
+  const [, setLocation] = useLocation();
+  const [selectedTab, setSelectedTab] = useState<'stocks' | 'crypto'>('stocks');
+  const [horizon, setHorizon] = useState<Horizon>('1m');
 
-  useEffect(() => {
-    if (!isLoading && !isAuthenticated) { window.location.href = '/auth'; }
-  }, [isAuthenticated, isLoading]);
-
-  const fetchOutlook = async () => {
-    setLoading(true); setError(null); setSubError(null);
-    try {
-      const res = await fetch(`/api/market/outlook?horizon=${horizon}&type=${activeTab}`, { credentials: 'include' });
-      if (res.status === 403) {
-        const body = await res.json();
-        setSubError(body.message || 'Subscription required');
-        setData(null); return;
+  const { data: outlook, isLoading, error, refetch } = useQuery({
+    queryKey: ['/api/market/outlook', { horizon, type: selectedTab }],
+    queryFn: async () => {
+      const response = await fetch(`/api/market/outlook?horizon=${horizon}&type=${selectedTab}`, {
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to fetch outlook');
       }
-      if (!res.ok) throw new Error('Failed to fetch outlook');
-      const json = await res.json();
-      setData(json);
-    } catch (err: any) {
-      setError(err.message || 'Error generating outlook');
-      toast({ title: 'Error', description: err.message, variant: 'destructive' });
-    } finally { setLoading(false); }
+      return response.json();
+    },
+    enabled: isAuthenticated,
+    retry: 1,
+  });
+
+  const horizons: { value: Horizon; label: string }[] = [
+    { value: '1w', label: '1 Week' },
+    { value: '2w', label: '2 Weeks' },
+    { value: '3w', label: '3 Weeks' },
+    { value: '1m', label: '1 Month' },
+    { value: '2m', label: '2 Months' },
+    { value: '4m', label: '4 Months' },
+    { value: '6m', label: '6 Months' },
+    { value: '1y', label: '1 Year' },
+  ];
+
+  if (error) {
+    const err = error as Error;
+    if (err.message.includes('subscription') || err.message.includes('Subscription')) {
+      return (
+        <Card className="p-12 text-center">
+          <Lock className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-semibold mb-2">Subscription Required</h3>
+          <p className="text-gray-600 mb-4">Active subscription required to access market outlook</p>
+          <Button onClick={() => setLocation('/plans')}>View Plans</Button>
+        </Card>
+      );
+    }
+  }
+
+  const renderSectorCard = (sector: SectorOutlook) => {
+    const signalConfig = {
+      bullish: { icon: TrendingUp, color: 'text-green-600', bg: 'bg-green-50', border: 'border-green-200' },
+      bearish: { icon: TrendingDown, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
+      neutral: { icon: Minus, color: 'text-gray-600', bg: 'bg-gray-50', border: 'border-gray-200' },
+    };
+
+    const config = signalConfig[sector.signal];
+    const Icon = config.icon;
+
+    return (
+      <Card key={sector.sector} className={`${config.border}`}>
+        <CardHeader className="pb-3">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center space-x-2">
+              <Icon className={`h-5 w-5 ${config.color}`} />
+              <div>
+                <CardTitle className="text-lg">{sector.sector}</CardTitle>
+                <p className="text-xs text-gray-500">Top: {sector.topStock}</p>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className={`text-xl font-bold ${config.color}`}>
+                {sector.changeEstimate > 0 ? '+' : ''}{sector.changeEstimate}%
+              </div>
+              <p className="text-xs text-gray-500">expected</p>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between text-sm">
+            <Badge variant="outline" className={sector.signal}>
+              {sector.signal}
+            </Badge>
+            <Badge variant="secondary">{sector.strength}</Badge>
+            <span className="text-xs text-gray-600">{sector.confidence}% conf.</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <span className="text-gray-500">Low: </span>
+              <span className="font-medium text-red-600">{sector.rangeLow}%</span>
+            </div>
+            <div className="text-right">
+              <span className="text-gray-500">High: </span>
+              <span className="font-medium text-green-600">+{sector.rangeHigh}%</span>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-500">Statistical</span>
+              <span className="font-medium">{sector.statsScore}/100</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-1.5">
+              <div 
+                className="bg-blue-500 h-1.5 rounded-full" 
+                style={{ width: `${sector.statsScore}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-500">Astrological</span>
+              <span className="font-medium">{sector.astroScore}/100</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-1.5">
+              <div 
+                className="bg-purple-500 h-1.5 rounded-full" 
+                style={{ width: `${sector.astroScore}%` }}
+              />
+            </div>
+          </div>
+
+          <details className="text-xs">
+            <summary className="cursor-pointer text-blue-600 font-medium">Show details</summary>
+            <div className="mt-2 space-y-2 text-gray-700">
+              {sector.keyFactors.length > 0 && (
+                <div>
+                  <p className="font-medium">Key Factors:</p>
+                  <ul className="list-disc list-inside space-y-1">
+                    {sector.keyFactors.map((factor, i) => (
+                      <li key={i}>{factor}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {sector.risks.length > 0 && (
+                <div>
+                  <p className="font-medium text-red-600">Risks:</p>
+                  <ul className="list-disc list-inside space-y-1">
+                    {sector.risks.map((risk, i) => (
+                      <li key={i}>{risk}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </details>
+        </CardContent>
+      </Card>
+    );
   };
 
-  // Auto-fetch when horizon or tab changes
-  useEffect(() => { if (isAuthenticated) fetchOutlook(); }, [horizon, activeTab, isAuthenticated]);
+  const renderCryptoCard = (crypto: CryptoOutlook) => {
+    const signalConfig = {
+      bullish: { icon: TrendingUp, color: 'text-green-600', bg: 'bg-green-50', border: 'border-green-200' },
+      bearish: { icon: TrendingDown, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
+      neutral: { icon: Minus, color: 'text-gray-600', bg: 'bg-gray-50', border: 'border-gray-200' },
+    };
 
-  // ── Toggle ────────────────────────────────────────────────────────────────
-  const Toggle = () => (
-    <div className="space-y-2">
-      <div
-        className="relative flex items-center w-60 rounded-xl border border-gray-200 bg-gray-100 p-1 cursor-pointer select-none"
-        onClick={() => setActiveTab(t => t === 'stocks' ? 'crypto' : 'stocks')}
-      >
-        <div className={`absolute top-1 bottom-1 w-[calc(50%-4px)] rounded-lg shadow-sm transition-all duration-300 ease-in-out
-          ${activeTab === 'stocks' ? 'left-1 bg-blue-600' : 'left-[calc(50%+3px)] bg-orange-500'}`} />
-        <div className={`relative z-10 flex-1 flex items-center justify-center gap-1.5 py-2 text-sm font-semibold transition-colors duration-300
-          ${activeTab === 'stocks' ? 'text-white' : 'text-gray-400'}`}>
-          <TrendingUp className="h-3.5 w-3.5" />Stocks
-        </div>
-        <div className={`relative z-10 flex-1 flex items-center justify-center gap-1.5 py-2 text-sm font-semibold transition-colors duration-300
-          ${activeTab === 'crypto' ? 'text-white' : 'text-gray-400'}`}>
-          <span className="font-bold text-xs">₿</span>Crypto
-        </div>
-      </div>
-    </div>
-  );
+    const config = signalConfig[crypto.signal];
+    const Icon = config.icon;
 
-  // ── Skeleton ──────────────────────────────────────────────────────────────
-  if (loading) return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Market Outlook</h1>
-          <p className="text-gray-500 text-sm">Generating {horizon} forecast…</p>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {[...Array(6)].map((_, i) => (
-          <Card key={i} className="animate-pulse">
-            <CardHeader><div className="h-5 bg-gray-200 rounded w-2/3 mb-2" /><div className="h-4 bg-gray-100 rounded w-1/2" /></CardHeader>
-            <CardContent><div className="h-16 bg-gray-100 rounded" /></CardContent>
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
+    return (
+      <Card key={crypto.symbol} className={`${config.border}`}>
+        <CardHeader className="pb-3">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center space-x-2">
+              <Icon className={`h-5 w-5 ${config.color}`} />
+              <div>
+                <CardTitle className="text-lg">{crypto.symbol}</CardTitle>
+                <p className="text-xs text-gray-500">{crypto.name}</p>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className={`text-xl font-bold ${config.color}`}>
+                {crypto.changeEstimate > 0 ? '+' : ''}{crypto.changeEstimate}%
+              </div>
+              <p className="text-xs text-gray-500">expected</p>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between text-sm">
+            <Badge variant="outline" className={crypto.signal}>
+              {crypto.signal}
+            </Badge>
+            <Badge variant="secondary">{crypto.strength}</Badge>
+            <span className="text-xs text-gray-600">{crypto.confidence}% conf.</span>
+          </div>
+
+          <div className="text-xs">
+            <span className="text-gray-500">Current: </span>
+            <span className="font-medium">${crypto.currentPrice.toLocaleString()}</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <span className="text-gray-500">Low: </span>
+              <span className="font-medium text-red-600">{crypto.rangeLow}%</span>
+            </div>
+            <div className="text-right">
+              <span className="text-gray-500">High: </span>
+              <span className="font-medium text-green-600">+{crypto.rangeHigh}%</span>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-500">Statistical</span>
+              <span className="font-medium">{crypto.statsScore}/100</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-1.5">
+              <div 
+                className="bg-blue-500 h-1.5 rounded-full" 
+                style={{ width: `${crypto.statsScore}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-500">Astrological</span>
+              <span className="font-medium">{crypto.astroScore}/100</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-1.5">
+              <div 
+                className="bg-purple-500 h-1.5 rounded-full" 
+                style={{ width: `${crypto.astroScore}%` }}
+              />
+            </div>
+          </div>
+
+          <details className="text-xs">
+            <summary className="cursor-pointer text-blue-600 font-medium">Show details</summary>
+            <div className="mt-2 space-y-2 text-gray-700">
+              {crypto.keyFactors.length > 0 && (
+                <div>
+                  <p className="font-medium">Key Factors:</p>
+                  <ul className="list-disc list-inside space-y-1">
+                    {crypto.keyFactors.map((factor, i) => (
+                      <li key={i}>{factor}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {crypto.risks.length > 0 && (
+                <div>
+                  <p className="font-medium text-red-600">Risks:</p>
+                  <ul className="list-disc list-inside space-y-1">
+                    {crypto.risks.map((risk, i) => (
+                      <li key={i}>{risk}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </details>
+        </CardContent>
+      </Card>
+    );
+  };
 
   return (
     <div className="space-y-6">
-      {/* ── Header ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <BarChart2 className="h-6 w-6 text-blue-600" />Market Outlook
+          <h1 className="text-2xl font-bold flex items-center space-x-2">
+            <TrendingUp className="h-6 w-6" />
+            <span>Market Outlook</span>
           </h1>
-          <p className="text-gray-500 text-sm mt-0.5">Sector & crypto trend forecast using Statistical Analysis + Vedic Astrology (50/50)</p>
+          <p className="text-sm text-gray-600">
+            Sector & crypto trend forecast using Statistical Analysis + Vedic Astrology (50/50)
+          </p>
         </div>
-        <Button onClick={fetchOutlook} variant="outline" size="sm" className="gap-2 self-start sm:self-auto" disabled={loading}>
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />Refresh
+        <Button onClick={() => refetch()} disabled={isLoading} size="sm" variant="outline">
+          <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+          Refresh
         </Button>
       </div>
 
-      {/* ── Controls ── */}
-      <Card>
-        <CardContent className="pt-4 pb-4">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-            <Toggle />
-            <div className="flex-1">
-              <p className="text-xs text-gray-500 mb-2 font-medium">Time Horizon</p>
-              <div className="flex flex-wrap gap-1.5">
-                {HORIZONS.map(h => (
-                  <button key={h.value} onClick={() => setHorizon(h.value)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
-                      ${horizon === h.value
-                        ? activeTab === 'stocks' ? 'bg-blue-600 text-white' : 'bg-orange-500 text-white'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                    {h.label}
-                  </button>
-                ))}
+      {/* Tabs: Stocks vs Crypto */}
+      <Tabs value={selectedTab} onValueChange={(v) => setSelectedTab(v as 'stocks' | 'crypto')}>
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="stocks">📈 Stocks</TabsTrigger>
+          <TabsTrigger value="crypto">🪙 Crypto</TabsTrigger>
+        </TabsList>
+
+        {/* Time Horizon Selector */}
+        <Card className="mt-4">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm">Time Horizon</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-2">
+              {horizons.map((h) => (
+                <Button
+                  key={h.value}
+                  variant={horizon === h.value ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setHorizon(h.value)}
+                >
+                  {h.label}
+                </Button>
+              ))}
+            </div>
+            {outlook && (
+              <div className="mt-3 text-xs text-gray-500">
+                <p>⏰ Generated: {new Date(outlook.generatedAt).toLocaleString()}</p>
+                <p>🎯 Target: {new Date(outlook.targetDate).toLocaleDateString()} ({outlook.daysAhead} days ahead)</p>
               </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Market Summary */}
+        {outlook?.marketSummary && (
+          <Card className="bg-blue-50 border-blue-200">
+            <CardContent className="pt-6">
+              <p className="text-sm text-blue-900">{outlook.marketSummary}</p>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Stocks Tab */}
+        <TabsContent value="stocks" className="space-y-6">
+          {isLoading ? (
+            <div className="text-center py-12">
+              <RefreshCw className="h-8 w-8 animate-spin mx-auto text-primary" />
+              <p className="mt-2 text-gray-600">Loading market outlook...</p>
             </div>
-          </div>
-          {data && (
-            <div className="flex items-center gap-4 mt-3 text-xs text-gray-400 border-t pt-3">
-              <span className="flex items-center gap-1"><Clock className="h-3 w-3" />Generated: {new Date(data.generatedAt).toLocaleTimeString('en-IN')}</span>
-              <span className="flex items-center gap-1"><Calendar className="h-3 w-3" />Target: {new Date(data.targetDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+          ) : outlook?.stocks ? (
+            <>
+              {/* Bullish Sectors */}
+              <div>
+                <h2 className="text-lg font-semibold flex items-center space-x-2 mb-3">
+                  <TrendingUp className="h-5 w-5 text-green-600" />
+                  <span>Bullish Sectors ({outlook.stocks.bullish.length})</span>
+                </h2>
+                {outlook.stocks.bullish.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {outlook.stocks.bullish.map(renderSectorCard)}
+                  </div>
+                ) : (
+                  <Card className="p-8 text-center bg-gray-50">
+                    <p className="text-gray-500">No bullish sectors for this horizon</p>
+                  </Card>
+                )}
+              </div>
+
+              {/* Bearish Sectors - ALWAYS SHOW */}
+              <div>
+                <h2 className="text-lg font-semibold flex items-center space-x-2 mb-3">
+                  <TrendingDown className="h-5 w-5 text-red-600" />
+                  <span>Bearish Sectors ({outlook.stocks.bearish.length})</span>
+                </h2>
+                {outlook.stocks.bearish.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {outlook.stocks.bearish.map(renderSectorCard)}
+                  </div>
+                ) : (
+                  <Card className="p-8 text-center bg-gray-50">
+                    <p className="text-gray-500">No bearish sectors for this horizon</p>
+                  </Card>
+                )}
+              </div>
+
+              {/* Neutral Sectors */}
+              <div>
+                <h2 className="text-lg font-semibold flex items-center space-x-2 mb-3">
+                  <Minus className="h-5 w-5 text-gray-600" />
+                  <span>Neutral Sectors ({outlook.stocks.neutral.length})</span>
+                </h2>
+                {outlook.stocks.neutral.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {outlook.stocks.neutral.map(renderSectorCard)}
+                  </div>
+                ) : (
+                  <Card className="p-8 text-center bg-gray-50">
+                    <p className="text-gray-500">No neutral sectors for this horizon</p>
+                  </Card>
+                )}
+              </div>
+            </>
+          ) : null}
+        </TabsContent>
+
+        {/* Crypto Tab */}
+        <TabsContent value="crypto" className="space-y-6">
+          {isLoading ? (
+            <div className="text-center py-12">
+              <RefreshCw className="h-8 w-8 animate-spin mx-auto text-primary" />
+              <p className="mt-2 text-gray-600">Loading crypto outlook...</p>
             </div>
-          )}
+          ) : outlook?.crypto ? (
+            <>
+              {/* Bullish Crypto */}
+              <div>
+                <h2 className="text-lg font-semibold flex items-center space-x-2 mb-3">
+                  <TrendingUp className="h-5 w-5 text-green-600" />
+                  <span>Bullish Crypto ({outlook.crypto.bullish.length})</span>
+                </h2>
+                {outlook.crypto.bullish.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {outlook.crypto.bullish.map(renderCryptoCard)}
+                  </div>
+                ) : (
+                  <Card className="p-8 text-center bg-gray-50">
+                    <p className="text-gray-500">No bullish crypto for this horizon</p>
+                  </Card>
+                )}
+              </div>
+
+              {/* Bearish Crypto - ALWAYS SHOW */}
+              <div>
+                <h2 className="text-lg font-semibold flex items-center space-x-2 mb-3">
+                  <TrendingDown className="h-5 w-5 text-red-600" />
+                  <span>Bearish Crypto ({outlook.crypto.bearish.length})</span>
+                </h2>
+                {outlook.crypto.bearish.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {outlook.crypto.bearish.map(renderCryptoCard)}
+                  </div>
+                ) : (
+                  <Card className="p-8 text-center bg-gray-50">
+                    <p className="text-gray-500">No bearish crypto for this horizon</p>
+                  </Card>
+                )}
+              </div>
+
+              {/* Neutral Crypto */}
+              <div>
+                <h2 className="text-lg font-semibold flex items-center space-x-2 mb-3">
+                  <Minus className="h-5 w-5 text-gray-600" />
+                  <span>Neutral Crypto ({outlook.crypto.neutral.length})</span>
+                </h2>
+                {outlook.crypto.neutral.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {outlook.crypto.neutral.map(renderCryptoCard)}
+                  </div>
+                ) : (
+                  <Card className="p-8 text-center bg-gray-50">
+                    <p className="text-gray-500">No neutral crypto for this horizon</p>
+                  </Card>
+                )}
+              </div>
+            </>
+          ) : null}
+        </TabsContent>
+      </Tabs>
+
+      {/* Disclaimer */}
+      <Card className="bg-amber-50 border-amber-200">
+        <CardContent className="pt-6">
+          <p className="text-xs text-amber-800">
+            <strong>Disclaimer:</strong> BullWiser outlook combines statistical analysis (RSI, MACD, Moving Averages) and 
+            Vedic astrology in a 50/50 model. This is not financial advice. Always do your own research before investing.
+          </p>
         </CardContent>
       </Card>
-
-      {/* ── Subscription wall ── */}
-      {subError && (
-        <Card className="border-2 border-dashed border-amber-300 bg-amber-50">
-          <CardContent className="py-12 text-center space-y-4">
-            <Lock className="h-10 w-10 text-amber-500 mx-auto" />
-            <h3 className="text-lg font-semibold text-amber-900">Subscription Required</h3>
-            <p className="text-amber-700 text-sm max-w-md mx-auto">{subError}</p>
-            <Button className="mt-2" onClick={() => window.location.href = '/plans'}>View Plans</Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── Error ── */}
-      {error && !subError && (
-        <Card className="border-red-200 bg-red-50">
-          <CardContent className="py-6 text-center text-red-700 text-sm">{error}</CardContent>
-        </Card>
-      )}
-
-      {/* ── Market summary ── */}
-      {data?.marketSummary && (
-        <Card className="bg-blue-50 border-blue-200">
-          <CardContent className="py-3 px-4 text-sm text-blue-800">{data.marketSummary}</CardContent>
-        </Card>
-      )}
-
-      {/* ── STOCKS view ── */}
-      {activeTab === 'stocks' && data?.stocks && (
-        <div className="space-y-6">
-          {/* Bullish sectors */}
-          {data.stocks.bullish.length > 0 && (
-            <div>
-              <h2 className="text-lg font-semibold text-green-700 flex items-center gap-2 mb-3">
-                <TrendingUp className="h-5 w-5" />Bullish Sectors ({data.stocks.bullish.length})
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {data.stocks.bullish.map(s => <SectorCard key={s.sector} item={s} />)}
-              </div>
-            </div>
-          )}
-
-          {/* Bearish sectors */}
-          {data.stocks.bearish.length > 0 && (
-            <div>
-              <h2 className="text-lg font-semibold text-red-700 flex items-center gap-2 mb-3">
-                <TrendingDown className="h-5 w-5" />Bearish Sectors ({data.stocks.bearish.length})
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {data.stocks.bearish.map(s => <SectorCard key={s.sector} item={s} />)}
-              </div>
-            </div>
-          )}
-
-          {/* Neutral sectors */}
-          {data.stocks.neutral.length > 0 && (
-            <div>
-              <h2 className="text-lg font-semibold text-gray-600 flex items-center gap-2 mb-3">
-                <Minus className="h-5 w-5" />Neutral Sectors ({data.stocks.neutral.length})
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {data.stocks.neutral.map(s => <SectorCard key={s.sector} item={s} />)}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── CRYPTO view ── */}
-      {activeTab === 'crypto' && data?.crypto && (
-        <div className="space-y-6">
-          {data.crypto.bullish.length > 0 && (
-            <div>
-              <h2 className="text-lg font-semibold text-green-700 flex items-center gap-2 mb-3">
-                <TrendingUp className="h-5 w-5" />Bullish Crypto ({data.crypto.bullish.length})
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {data.crypto.bullish.map(c => <CryptoCard key={c.symbol} item={c} />)}
-              </div>
-            </div>
-          )}
-          {data.crypto.bearish.length > 0 && (
-            <div>
-              <h2 className="text-lg font-semibold text-red-700 flex items-center gap-2 mb-3">
-                <TrendingDown className="h-5 w-5" />Bearish Crypto ({data.crypto.bearish.length})
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {data.crypto.bearish.map(c => <CryptoCard key={c.symbol} item={c} />)}
-              </div>
-            </div>
-          )}
-          {data.crypto.neutral.length > 0 && (
-            <div>
-              <h2 className="text-lg font-semibold text-gray-600 flex items-center gap-2 mb-3">
-                <Minus className="h-5 w-5" />Neutral Crypto ({data.crypto.neutral.length})
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {data.crypto.neutral.map(c => <CryptoCard key={c.symbol} item={c} />)}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Locked state ── */}
-      {activeTab === 'stocks' && data?.stocksLocked && (
-        <Card className="border-dashed border-2 border-gray-200">
-          <CardContent className="py-10 text-center space-y-3">
-            <Lock className="h-8 w-8 text-gray-400 mx-auto" />
-            <p className="text-gray-600 font-medium">Stock sector outlook requires an active stock subscription</p>
-            <Button size="sm" onClick={() => window.location.href = '/plans'}>Get Stock Plan</Button>
-          </CardContent>
-        </Card>
-      )}
-      {activeTab === 'crypto' && data?.cryptoLocked && (
-        <Card className="border-dashed border-2 border-gray-200">
-          <CardContent className="py-10 text-center space-y-3">
-            <Lock className="h-8 w-8 text-gray-400 mx-auto" />
-            <p className="text-gray-600 font-medium">Crypto outlook requires an active crypto subscription</p>
-            <Button size="sm" onClick={() => window.location.href = '/plans'}>Get Crypto Plan</Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── Disclaimer ── */}
-      <p className="text-xs text-gray-400 text-center pb-4">
-        BullWiser outlook combines statistical analysis (RSI, MACD, Moving Averages) and Vedic astrology in a 50/50 model.
-        This is not financial advice. Always do your own research before investing.
-      </p>
     </div>
   );
 }
