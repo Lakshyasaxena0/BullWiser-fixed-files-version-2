@@ -140,10 +140,8 @@ export function registerRoutes(app: Express): Server {
     } catch (error) { res.status(500).json({ message: "Error calculating crypto billing price" }); }
   });
 
-  // ── Market Outlook — subscription gated ──────────────────────────────────
-  // Stock outlook requires active stock subscription
-  // Crypto outlook requires active crypto subscription
-  // (same plan system as /api/predict and /api/crypto/predict)
+  // ── Market Outlook — UNIFIED SUBSCRIPTION ────────────────────────────────
+  // ★ KEY FIX: Any active subscription grants access to both stocks AND crypto
   app.get('/api/market/outlook', isAuthenticated, async (req: any, res) => {
     try {
       const userId  = req.user.id;
@@ -158,45 +156,32 @@ export function registerRoutes(app: Express): Server {
       const userSubscriptions = await storage.getUserSubscriptions(userId);
       const now = new Date();
 
-      const hasStockSub  = userSubscriptions.some(s => !s.mode.includes('crypto') && new Date(s.endTs * 1000) > now);
-      const hasCryptoSub = userSubscriptions.some(s =>  s.mode.includes('crypto') && new Date(s.endTs * 1000) > now);
+      // ★ UNIFIED SUBSCRIPTION CHECK: any active subscription = full access
+      const hasActiveSub = userSubscriptions.some(s => new Date(s.endTs * 1000) > now);
 
-      // Check subscription based on requested type
-      if (type === 'stocks' && !hasStockSub) {
-        return res.status(403).json({ message: 'Active stock subscription required for sector outlook', error: 'SUBSCRIPTION_REQUIRED', subscriptionType: 'stock' });
-      }
-      if (type === 'crypto' && !hasCryptoSub) {
-        return res.status(403).json({ message: 'Active crypto subscription required for crypto outlook', error: 'SUBSCRIPTION_REQUIRED', subscriptionType: 'crypto' });
-      }
-      if (type === 'both' && !hasStockSub && !hasCryptoSub) {
-        return res.status(403).json({ message: 'Active subscription required for market outlook', error: 'SUBSCRIPTION_REQUIRED', subscriptionType: 'stock' });
+      if (!hasActiveSub) {
+        return res.status(403).json({ 
+          message: 'Active subscription required to access market outlook', 
+          error: 'SUBSCRIPTION_REQUIRED',
+          subscriptionType: 'any'
+        });
       }
 
       console.log(`[Outlook] User ${userId} requesting ${horizon} ${type} outlook`);
       const outlook = await marketOutlookService.generateOutlook(horizon);
 
-      // Filter response based on subscription
+      // ★ RETURN BOTH stocks and crypto for any active subscription
       const response: any = {
         generatedAt:   outlook.generatedAt,
         horizon:       outlook.horizon,
         targetDate:    outlook.targetDate,
         daysAhead:     outlook.daysAhead,
         marketSummary: outlook.marketSummary,
+        stocks:        outlook.stocks,
+        crypto:        outlook.crypto,
+        stocksLocked:  false,
+        cryptoLocked:  false,
       };
-
-      if (hasStockSub || type === 'stocks') {
-        response.stocks = outlook.stocks;
-      } else {
-        response.stocks = null;
-        response.stocksLocked = true;
-      }
-
-      if (hasCryptoSub || type === 'crypto') {
-        response.crypto = outlook.crypto;
-      } else {
-        response.crypto = null;
-        response.cryptoLocked = true;
-      }
 
       return res.json(response);
     } catch (error) {
@@ -211,9 +196,12 @@ export function registerRoutes(app: Express): Server {
       const { stock = 'TCS', when } = req.body;
       const userId = req.user.id;
       const userSubscriptions = await storage.getUserSubscriptions(userId);
-      const activeStockSubscription = userSubscriptions.find(sub => !sub.mode.includes('crypto') && new Date(sub.endTs * 1000) > new Date());
+      
+      // ★ OPTIONAL: Unify stock predictions too (remove crypto filter)
+      const activeStockSubscription = userSubscriptions.find(sub => new Date(sub.endTs * 1000) > new Date());
+      
       if (!activeStockSubscription) {
-        return res.status(403).json({ message: "Active stock trading subscription required", error: "SUBSCRIPTION_REQUIRED", subscriptionType: "stock" });
+        return res.status(403).json({ message: "Active subscription required", error: "SUBSCRIPTION_REQUIRED", subscriptionType: "any" });
       }
       const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
       const upperSymbol = stock.toUpperCase();
@@ -306,7 +294,7 @@ export function registerRoutes(app: Express): Server {
       const userId = req.user.id;
       const subscription = await storage.getSubscription(subscriptionId);
       if (!subscription || subscription.userId !== userId) return res.status(403).json({ message: "Invalid or unauthorized subscription" });
-      if (subscription.endTs < Math.floor(Date.now() / 1000) || !subscription.mode.includes('crypto')) return res.status(403).json({ message: "Subscription expired or invalid" });
+      if (subscription.endTs < Math.floor(Date.now() / 1000)) return res.status(403).json({ message: "Subscription expired" });
       const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
       const cryptoQuote = await cryptoDataService.getCryptoQuote(cryptoSymbol.toUpperCase());
       if (!cryptoQuote) return res.status(404).json({ message: "Cryptocurrency not found" });
