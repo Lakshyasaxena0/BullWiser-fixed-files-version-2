@@ -1,7 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// marketOutlookService.ts
+// marketOutlookService.ts — FIXED VERSION
 // Predicts bullish / bearish outlook for stock sectors and cryptocurrencies
 // Statistical Analysis (50%) + Vedic Astrology (50%)
+// 
+// KEY FIX: Now properly calculates planetary positions for TARGET DATE
+// instead of always using current date
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { stockDataService }          from './stockDataService';
@@ -134,13 +137,13 @@ export class MarketOutlookService {
     const targetDate = new Date(Date.now() + days * 86400000);
     const band       = HORIZON_BAND[horizon] || 0.10;
 
-    console.log(`[Outlook] Generating ${horizon} outlook (${days} days ahead)`);
+    console.log(`[Outlook] Generating ${horizon} outlook (${days} days ahead) → target: ${targetDate.toISOString().split('T')[0]}`);
 
-    // Run stock sectors and crypto in parallel
+    // ★ KEY FIX: Fetch astrology data for TARGET DATE, not current date
     const [astroData, sectorOutlooks, cryptoOutlooks] = await Promise.all([
-      astrologyService.getCurrentAstrology(new Date()),
-      this.analyzeSectors(horizon, days, band),
-      this.analyzeCryptos(horizon, days, band),
+      astrologyService.getCurrentAstrology(targetDate), // ← FIXED: was new Date()
+      this.analyzeSectors(horizon, days, band, targetDate), // ← Pass targetDate
+      this.analyzeCryptos(horizon, days, band, targetDate), // ← Pass targetDate
     ]);
 
     // Sort by changeEstimate descending
@@ -157,6 +160,8 @@ export class MarketOutlookService {
 
     const marketSummary = this.buildMarketSummary(horizon, stocksBullish, stocksBearish, cryptoBullish, cryptoBearish, astroData);
 
+    console.log(`[Outlook] ${horizon} result: ${stocksBullish.length} bullish, ${stocksBearish.length} bearish, ${stocksNeutral.length} neutral sectors`);
+
     return {
       generatedAt:  new Date().toISOString(),
       horizon,
@@ -169,9 +174,9 @@ export class MarketOutlookService {
   }
 
   // ── Analyze all stock sectors ─────────────────────────────────────────────
-  private async analyzeSectors(horizon: string, days: number, band: number): Promise<SectorOutlook[]> {
-    const targetDate = new Date(Date.now() + days * 86400000);
-    const astroData  = await astrologyService.getCurrentAstrology(new Date());
+  private async analyzeSectors(horizon: string, days: number, band: number, targetDate: Date): Promise<SectorOutlook[]> {
+    // ★ KEY FIX: Get astrology data for TARGET DATE
+    const astroData  = await astrologyService.getCurrentAstrology(targetDate); // ← FIXED: was new Date()
 
     const results = await Promise.all(
       Object.entries(SECTOR_STOCKS).map(async ([sector, stocks]) => {
@@ -270,12 +275,12 @@ export class MarketOutlookService {
 
       astroScore = Math.round(Math.min(100, Math.max(0, totalBias / rulers.length)));
 
-      // Advanced sector analysis
-      const advanced = await advancedAstrologyService.analyzeStockBySector(stocks[0], sector, new Date()).catch(() => null);
+      // Advanced sector analysis with TARGET DATE
+      const advanced = await advancedAstrologyService.analyzeStockBySector(stocks[0], sector, targetDate).catch(() => null);
       if (advanced) {
         astroScore = Math.round((astroScore + advanced.sectorStrength) / 2);
-        if (advanced.timing === 'excellent') astroFactors.push(`Excellent planetary timing for ${sector}`);
-        if (advanced.timing === 'challenging') astroFactors.push(`Challenging planetary period for ${sector}`);
+        if (advanced.timing === 'excellent') astroFactors.push(`Excellent planetary timing for ${sector} on ${horizon} horizon`);
+        if (advanced.timing === 'challenging') astroFactors.push(`Challenging planetary period for ${sector} ahead`);
         if (advanced.keyFactors?.length) astroFactors.push(...advanced.keyFactors.slice(0, 2));
       }
     } catch (err) {
@@ -307,23 +312,24 @@ export class MarketOutlookService {
       keyFactors: allFactors.length > 0 ? allFactors : [`${sector} sector analysis based on ${horizon} horizon`],
       risks:      allRisks.length  > 0 ? allRisks  : [],
       topStock, topStockChange: Math.round(topChange * 100) / 100,
-      horizon, targetDate: new Date(Date.now() + HORIZON_DAYS[horizon] * 86400000).toISOString(),
+      horizon, targetDate: targetDate.toISOString(),
     };
   }
 
   // ── Analyze all cryptocurrencies ──────────────────────────────────────────
-  private async analyzeCryptos(horizon: string, days: number, band: number): Promise<CryptoOutlook[]> {
-    const astroData = await astrologyService.getCurrentAstrology(new Date());
+  private async analyzeCryptos(horizon: string, days: number, band: number, targetDate: Date): Promise<CryptoOutlook[]> {
+    // ★ KEY FIX: Get astrology for TARGET DATE
+    const astroData = await astrologyService.getCurrentAstrology(targetDate); // ← FIXED: was new Date()
 
     const results = await Promise.all(
-      CRYPTO_SYMBOLS.map(symbol => this.analyzeSingleCrypto(symbol, horizon, days, band, astroData))
+      CRYPTO_SYMBOLS.map(symbol => this.analyzeSingleCrypto(symbol, horizon, days, band, astroData, targetDate))
     );
 
     return results.filter(Boolean) as CryptoOutlook[];
   }
 
   private async analyzeSingleCrypto(
-    symbol: string, horizon: string, days: number, band: number, astroData: any
+    symbol: string, horizon: string, days: number, band: number, astroData: any, targetDate: Date
   ): Promise<CryptoOutlook | null> {
     // Crypto gets higher volatility band
     const cryptoBand = band * 1.5;
@@ -365,9 +371,9 @@ export class MarketOutlookService {
       let rulerScore = bias * 100;
       if (pos?.retrograde) {
         rulerScore = 100 - rulerScore;
-        astroFactors.push(`${ruler} retrograde — ${symbol} may face turbulence`);
+        astroFactors.push(`${ruler} retrograde on ${horizon} horizon — ${symbol} may face turbulence`);
       } else if (pos) {
-        astroFactors.push(`${ruler} (${symbol}'s ruler) in ${pos.sign}`);
+        astroFactors.push(`${ruler} (${symbol}'s ruler) in ${pos.sign} for ${horizon} period`);
       }
 
       // Hora influence
@@ -382,9 +388,9 @@ export class MarketOutlookService {
       // Lunar phase influence on crypto (crypto is highly Moon-sensitive)
       if (astroData.lunarPhase === 'Full Moon') {
         astroScore = Math.min(100, astroScore + 8);
-        astroFactors.push('Full Moon — heightened crypto volatility expected');
+        astroFactors.push('Full Moon period — heightened crypto volatility expected');
       } else if (astroData.lunarPhase === 'New Moon') {
-        astroFactors.push('New Moon — potential trend reversal period');
+        astroFactors.push('New Moon phase — potential trend reversal period');
       }
     } catch { /* skip */ }
 
@@ -411,7 +417,7 @@ export class MarketOutlookService {
       statsScore, astroScore,
       keyFactors: allFactors.length > 0 ? allFactors : [`${symbol} analysis for ${horizon} horizon`],
       risks: allRisks,
-      horizon, targetDate: new Date(Date.now() + HORIZON_DAYS[horizon] * 86400000).toISOString(),
+      horizon, targetDate: targetDate.toISOString(),
     };
   }
 
@@ -431,7 +437,7 @@ export class MarketOutlookService {
     if (topBullish) summary += `${topBullish} leads the bullish outlook. `;
     if (topBearish) summary += `${topBearish} faces headwinds. `;
     if (topCrypto)  summary += `In crypto, ${topCrypto} shows the strongest upside potential. `;
-    summary += `Current ${hora} hora adds ${['Jupiter', 'Venus', 'Mercury'].includes(hora) ? 'positive' : 'cautionary'} influence.`;
+    summary += `Planetary configuration at target date shows ${hora} hora influence, adding ${['Jupiter', 'Venus', 'Mercury'].includes(hora) ? 'positive' : 'cautionary'} energy.`;
     return summary;
   }
 }
