@@ -42,6 +42,32 @@ interface CryptoOutlook {
   risks: string[];
 }
 
+// Helper function to format date in Indian format with IST timezone
+function formatIndianDateTime(isoString: string): string {
+  const date = new Date(isoString);
+  
+  // Format: DD/MM/YYYY, HH:MM AM/PM IST
+  const day = date.getDate().toString().padStart(2, '0');
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const year = date.getFullYear();
+  
+  let hours = date.getHours();
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  
+  return `${day}/${month}/${year}, ${hours}:${minutes} ${ampm}`;
+}
+
+// Helper function to format just the date in Indian format
+function formatIndianDate(isoString: string): string {
+  const date = new Date(isoString);
+  const day = date.getDate().toString().padStart(2, '0');
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}/${month}/${year}`;
+}
+
 export default function MarketOutlook() {
   const { isAuthenticated } = useAuth();
   const [, setLocation] = useLocation();
@@ -112,7 +138,7 @@ export default function MarketOutlook() {
             </div>
             <div className="text-right">
               <div className={`text-xl font-bold ${config.color}`}>
-                {sector.changeEstimate > 0 ? '+' : ''}{sector.changeEstimate}%
+                {sector.changeEstimate > 0 ? '+' : ''}{sector.changeEstimate.toFixed(1)}%
               </div>
               <p className="text-xs text-gray-500">expected</p>
             </div>
@@ -130,11 +156,11 @@ export default function MarketOutlook() {
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div>
               <span className="text-gray-500">Low: </span>
-              <span className="font-medium text-red-600">{sector.rangeLow}%</span>
+              <span className="font-medium text-red-600">{sector.rangeLow.toFixed(1)}%</span>
             </div>
             <div className="text-right">
               <span className="text-gray-500">High: </span>
-              <span className="font-medium text-green-600">+{sector.rangeHigh}%</span>
+              <span className="font-medium text-green-600">+{sector.rangeHigh.toFixed(1)}%</span>
             </div>
           </div>
 
@@ -217,7 +243,7 @@ export default function MarketOutlook() {
             </div>
             <div className="text-right">
               <div className={`text-xl font-bold ${config.color}`}>
-                {crypto.changeEstimate > 0 ? '+' : ''}{crypto.changeEstimate}%
+                {crypto.changeEstimate > 0 ? '+' : ''}{crypto.changeEstimate.toFixed(1)}%
               </div>
               <p className="text-xs text-gray-500">expected</p>
             </div>
@@ -240,11 +266,11 @@ export default function MarketOutlook() {
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div>
               <span className="text-gray-500">Low: </span>
-              <span className="font-medium text-red-600">{crypto.rangeLow}%</span>
+              <span className="font-medium text-red-600">{crypto.rangeLow.toFixed(1)}%</span>
             </div>
             <div className="text-right">
               <span className="text-gray-500">High: </span>
-              <span className="font-medium text-green-600">+{crypto.rangeHigh}%</span>
+              <span className="font-medium text-green-600">+{crypto.rangeHigh.toFixed(1)}%</span>
             </div>
           </div>
 
@@ -349,9 +375,16 @@ export default function MarketOutlook() {
               ))}
             </div>
             {outlook && (
-              <div className="mt-3 text-xs text-gray-500">
-                <p>⏰ Generated: {new Date(outlook.generatedAt).toLocaleString()}</p>
-                <p>🎯 Target: {new Date(outlook.targetDate).toLocaleDateString()} ({outlook.daysAhead} days ahead)</p>
+              <div className="mt-3 space-y-1 text-xs text-gray-600">
+                <p className="flex items-center gap-2">
+                  <span className="font-medium">🕐 Generated:</span>
+                  <span>{formatIndianDateTime(outlook.generatedAt)}</span>
+                </p>
+                <p className="flex items-center gap-2">
+                  <span className="font-medium">🎯 Target:</span>
+                  <span>{formatIndianDate(outlook.targetDate)}</span>
+                  <span className="text-gray-500">({outlook.daysAhead} days ahead)</span>
+                </p>
               </div>
             )}
           </CardContent>
