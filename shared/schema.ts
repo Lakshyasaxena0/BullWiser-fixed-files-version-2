@@ -132,6 +132,7 @@ export const trainingStatus = pgTable("training_status", {
 });
 
 // Predictions table for storing prediction results
+// ★ UPDATED: Added analytics columns for detailed tracking
 export const predictions = pgTable("predictions", {
   id: integer("id").primaryKey().generatedByDefaultAsIdentity(),
   userId: varchar("user_id").references(() => users.id).notNull(),
@@ -145,6 +146,14 @@ export const predictions = pgTable("predictions", {
   createdAt: timestamp("created_at").defaultNow(),
   targetDate: timestamp("target_date"),
   isActive: boolean("is_active").default(true),
+  
+  // ★ NEW: Analytics columns
+  statisticalReasoning: text("statistical_reasoning"),
+  astroReasoning: text("astro_reasoning"),
+  planetaryData: jsonb("planetary_data"),
+  aiLearning: text("ai_learning"),
+  actualPrice: real("actual_price"),
+  deviation: real("deviation"),
 });
 
 // User watchlist
