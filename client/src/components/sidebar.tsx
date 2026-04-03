@@ -15,11 +15,12 @@ import {
   ChevronLeft,
   ChevronRight,
   History,
+  BarChart3, // ★ NEW icon for Analytics
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { BullWiserLogo } from "@/components/BullWiserLogo";
 
-// ── Cryptocurrencies removed — merged into Trading History ────────────────
+// ★ UPDATED: Added Prediction Analytics
 const navigation = [
   { name: "Dashboard",       href: "/",               icon: LayoutDashboard },
   { name: "Portfolio",       href: "/portfolio",       icon: Briefcase },
@@ -27,6 +28,7 @@ const navigation = [
   { name: "Subscription",    href: "/subscription",    icon: CreditCard },
   { name: "Predictions",     href: "/predictions",     icon: TrendingUp },
   { name: "Trading History", href: "/trading-history", icon: History },
+  { name: "Analytics",       href: "/prediction-analytics", icon: BarChart3 }, // ★ NEW
   { name: "Plans",           href: "/plans",           icon: Crown },
   { name: "Settings",        href: "/settings",        icon: Settings },
 ];
@@ -160,11 +162,7 @@ export default function Sidebar() {
             <div className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
               <ul className="space-y-2">
                 {navigation.map((item) => {
-                  // Highlight Trading History when on /cryptocurrencies too
-                  // (so old bookmarks still feel "active" in the right place)
-                  const isActive =
-                    location === item.href ||
-                    (item.href === "/trading-history" && location === "/cryptocurrencies");
+                  const isActive = location === item.href;
                   const Icon = item.icon;
                   return (
                     <li key={item.name}>
