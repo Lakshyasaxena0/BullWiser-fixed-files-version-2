@@ -22,6 +22,7 @@ import ActivitiesPage from "@/pages/activities";
 import TradingHistoryPage from "@/pages/trading-history";
 import CryptoPlans from "./pages/crypto-plans";
 import MarketOutlook from "@/pages/market-outlook";
+import PredictionAnalytics from "@/pages/prediction-analytics"; // ★ NEW
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -69,6 +70,7 @@ function Router() {
         <Route path="/subscription" component={SubscriptionPage} />
         <Route path="/notifications" component={Notifications} />
         <Route path="/market-outlook" component={MarketOutlook} />
+        <Route path="/prediction-analytics" component={PredictionAnalytics} /> {/* ★ NEW */}
         <Route path="/auth" component={AuthPage} />
         <Route component={NotFound} />
       </Switch>
@@ -95,6 +97,7 @@ function Router() {
             <Route path="/activities/:id" component={ActivitiesPage} />
             <Route path="/trading-history" component={TradingHistoryPage} />
             <Route path="/market-outlook" component={MarketOutlook} />
+            <Route path="/prediction-analytics" component={PredictionAnalytics} /> {/* ★ NEW */}
             <Route path="/cryptocurrencies">
               <Redirect to="/trading-history" />
             </Route>
