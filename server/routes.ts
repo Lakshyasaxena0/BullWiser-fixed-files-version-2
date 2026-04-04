@@ -11,6 +11,7 @@ import { astrologyService } from "./astrologyService";
 import { advancedAstrologyService } from "./advancedAstrologyService";
 import { aiAstrologyTrainer } from "./aiAstrologyTrainer";
 import { marketOutlookService } from "./marketOutlookService";
+import { predictionHistoryService } from "./predictionHistoryService"; // ★ NEW
 import * as crypto from 'crypto';
 import { db } from "./db";
 import { users } from "@shared/schema";
@@ -141,12 +142,11 @@ export function registerRoutes(app: Express): Server {
   });
 
   // ── Market Outlook — UNIFIED SUBSCRIPTION ────────────────────────────────
-  // ★ KEY FIX: Any active subscription grants access to both stocks AND crypto
   app.get('/api/market/outlook', isAuthenticated, async (req: any, res) => {
     try {
       const userId  = req.user.id;
       const horizon = (req.query.horizon as string) || '1m';
-      const type    = (req.query.type as string) || 'stocks'; // 'stocks' | 'crypto' | 'both'
+      const type    = (req.query.type as string) || 'stocks';
 
       const validHorizons = ['1w', '2w', '3w', '1m', '2m', '4m', '6m', '1y'];
       if (!validHorizons.includes(horizon)) {
@@ -155,8 +155,6 @@ export function registerRoutes(app: Express): Server {
 
       const userSubscriptions = await storage.getUserSubscriptions(userId);
       const now = new Date();
-
-      // ★ UNIFIED SUBSCRIPTION CHECK: any active subscription = full access
       const hasActiveSub = userSubscriptions.some(s => new Date(s.endTs * 1000) > now);
 
       if (!hasActiveSub) {
@@ -170,7 +168,6 @@ export function registerRoutes(app: Express): Server {
       console.log(`[Outlook] User ${userId} requesting ${horizon} ${type} outlook`);
       const outlook = await marketOutlookService.generateOutlook(horizon);
 
-      // ★ RETURN BOTH stocks and crypto for any active subscription
       const response: any = {
         generatedAt:   outlook.generatedAt,
         horizon:       outlook.horizon,
@@ -197,7 +194,6 @@ export function registerRoutes(app: Express): Server {
       const userId = req.user.id;
       const userSubscriptions = await storage.getUserSubscriptions(userId);
       
-      // ★ OPTIONAL: Unify stock predictions too (remove crypto filter)
       const activeStockSubscription = userSubscriptions.find(sub => new Date(sub.endTs * 1000) > new Date());
       
       if (!activeStockSubscription) {
@@ -254,7 +250,48 @@ export function registerRoutes(app: Express): Server {
         companyName: realTimeQuote.companyName,
         ...(showAstroDetails && { astrologyBias: realTimeQuote.astrologyBias || 0, horaInfluence: realTimeQuote.horaInfluence, astroFactors: enhancedPrediction.astroFactors, astroStrength: enhancedPrediction.astroStrength, astroPowered: true }),
       };
-      await storage.createPrediction({ userId, stock: finalPrediction.stock, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: req.body.mode || 'ai-astro-combined', riskLevel: req.body.riskLevel || 'medium', targetDate: whenDate });
+
+      // ★ UPDATED: Store prediction with analytics data
+      const statisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0
+        ? enhancedPrediction.analysis.technicalFactors.join('; ')
+        : 'Standard technical analysis applied';
+
+      const astroReasoning = enhancedPrediction.astroRecommendation || 
+        (enhancedPrediction.warnings?.length > 0 ? enhancedPrediction.warnings.join('; ') : null);
+
+      let planetaryData: any = null;
+      try {
+        const astroData = await astrologyService.getCurrentAstrology(whenDate);
+        planetaryData = {
+          sun: astroData.planetaryPositions?.sun || null,
+          moon: astroData.planetaryPositions?.moon || null,
+          mercury: astroData.planetaryPositions?.mercury || null,
+          venus: astroData.planetaryPositions?.venus || null,
+          mars: astroData.planetaryPositions?.mars || null,
+          jupiter: astroData.planetaryPositions?.jupiter || null,
+          saturn: astroData.planetaryPositions?.saturn || null,
+          hora: astroData.horaLord || null,
+          nakshatra: astroData.currentNakshatra || null,
+        };
+      } catch (astroError) {
+        console.log('[Predict] Could not fetch planetary data:', astroError);
+      }
+
+      await storage.createPrediction({
+        userId,
+        stock: finalPrediction.stock,
+        currentPrice: finalPrediction.currentPrice,
+        predLow: finalPrediction.predLow,
+        predHigh: finalPrediction.predHigh,
+        confidence: finalPrediction.confidence,
+        mode: req.body.mode || 'ai-astro-combined',
+        riskLevel: req.body.riskLevel || 'medium',
+        targetDate: whenDate,
+        statisticalReasoning,
+        astroReasoning,
+        planetaryData: planetaryData ? JSON.stringify(planetaryData) : null,
+      });
+
       return res.json(finalPrediction);
     } catch (error) {
       console.error('Prediction error:', error);
@@ -283,7 +320,47 @@ export function registerRoutes(app: Express): Server {
         marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h,
         aiPowered: enhancedPrediction.metadata?.aiEnabled || false, livePriceAvailable: currentPrice > 0,
       };
-      await storage.createPrediction({ userId, stock: `CRYPTO_${finalPrediction.crypto}`, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode, riskLevel, targetDate: whenDate });
+
+      // ★ UPDATED: Store crypto prediction with analytics data
+      const cryptoStatisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0
+        ? enhancedPrediction.analysis.technicalFactors.join('; ')
+        : 'Crypto technical analysis with volatility adjustment';
+
+      const cryptoAstroReasoning = enhancedPrediction.astroRecommendation || null;
+
+      let cryptoPlanetaryData: any = null;
+      try {
+        const astroData = await astrologyService.getCurrentAstrology(whenDate);
+        cryptoPlanetaryData = {
+          sun: astroData.planetaryPositions?.sun || null,
+          moon: astroData.planetaryPositions?.moon || null,
+          mercury: astroData.planetaryPositions?.mercury || null,
+          venus: astroData.planetaryPositions?.venus || null,
+          mars: astroData.planetaryPositions?.mars || null,
+          jupiter: astroData.planetaryPositions?.jupiter || null,
+          saturn: astroData.planetaryPositions?.saturn || null,
+          hora: astroData.horaLord || null,
+          nakshatra: astroData.currentNakshatra || null,
+        };
+      } catch (astroError) {
+        console.log('[CryptoPredict] Could not fetch planetary data:', astroError);
+      }
+
+      await storage.createPrediction({
+        userId,
+        stock: `CRYPTO_${finalPrediction.crypto}`,
+        currentPrice: finalPrediction.currentPrice,
+        predLow: finalPrediction.predLow,
+        predHigh: finalPrediction.predHigh,
+        confidence: finalPrediction.confidence,
+        mode,
+        riskLevel,
+        targetDate: whenDate,
+        statisticalReasoning: cryptoStatisticalReasoning,
+        astroReasoning: cryptoAstroReasoning,
+        planetaryData: cryptoPlanetaryData ? JSON.stringify(cryptoPlanetaryData) : null,
+      });
+
       return res.json(finalPrediction);
     } catch (error) { console.error('Crypto prediction error:', error); res.status(500).json({ message: "Error generating crypto prediction" }); }
   });
@@ -354,7 +431,7 @@ export function registerRoutes(app: Express): Server {
     try {
       const userId = req.user.id;
       const { mode = 'suggestion', tradesPerDay = 2, cryptoValue = 10000, duration = 'monthly', referralCount = 0 } = req.body;
-      const bill = calculateCryptoBillingPrice(mode, parseInt(tradesPerDay), parseFloat(cryptoValue), duration, parseInt(referralCount));
+      const bill = calculateCryptoBillingPrice(mode, parseInt(tradesPerDay), parseFloat(cryptoValue), duration, parseInt(referralCount)));
       const startTs = Math.floor(Date.now() / 1000);
       const durationMap: any = { daily: 86400, weekly: 7*86400, monthly: 30*86400 };
       const endTs = startTs + (durationMap[duration] || 365*86400);
@@ -377,6 +454,51 @@ export function registerRoutes(app: Express): Server {
       res.json({ status: 'ok' });
     } catch (error) { console.error('Feedback error:', error); res.status(500).json({ message: "Error submitting feedback" }); }
   });
+
+  // ── Prediction Analytics Routes ──────────────────────────────────────────────
+  // ★ NEW: Prediction history and analytics endpoints
+  
+  app.get('/api/predictions/history', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const limit = parseInt(req.query.limit as string || '100');
+      const history = await predictionHistoryService.getUserPredictionHistory(userId, limit);
+      res.json(history);
+    } catch (error) {
+      console.error('[API] Error fetching prediction history:', error);
+      res.status(500).json({ message: 'Error fetching prediction history' });
+    }
+  });
+
+  app.get('/api/predictions/stats', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const stats = await predictionHistoryService.getUserPredictionStats(userId);
+      res.json(stats);
+    } catch (error) {
+      console.error('[API] Error fetching prediction stats:', error);
+      res.status(500).json({ message: 'Error fetching prediction stats' });
+    }
+  });
+
+  app.get('/api/predictions/:id/details', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const predictionId = parseInt(req.params.id);
+      const details = await predictionHistoryService.getPredictionDetails(predictionId, userId);
+      
+      if (!details) {
+        return res.status(404).json({ message: 'Prediction not found' });
+      }
+      
+      res.json(details);
+    } catch (error) {
+      console.error('[API] Error fetching prediction details:', error);
+      res.status(500).json({ message: 'Error fetching prediction details' });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
 
   app.post('/api/training/start', async (req, res) => { if (trainingInProgress) return res.json({ status: 'running' }); runRealTraining(); res.json({ status: 'started' }); });
   app.get('/api/training/status', async (req, res) => { try { const status = await storage.getTrainingStatus(); res.json(status || { progress: 0, message: 'not started', startedAt: 0 }); } catch (error) { res.status(500).json({ message: "Error fetching training status" }); } });
