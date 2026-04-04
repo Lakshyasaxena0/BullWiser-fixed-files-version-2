@@ -15,12 +15,11 @@ import {
   ChevronLeft,
   ChevronRight,
   History,
-  BarChart3, // ★ NEW icon for Analytics
+  BarChart3,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { BullWiserLogo } from "@/components/BullWiserLogo";
 
-// ★ UPDATED: Added Prediction Analytics
 const navigation = [
   { name: "Dashboard",       href: "/",               icon: LayoutDashboard },
   { name: "Portfolio",       href: "/portfolio",       icon: Briefcase },
@@ -28,7 +27,7 @@ const navigation = [
   { name: "Subscription",    href: "/subscription",    icon: CreditCard },
   { name: "Predictions",     href: "/predictions",     icon: TrendingUp },
   { name: "Trading History", href: "/trading-history", icon: History },
-  { name: "Analytics",       href: "/prediction-analytics", icon: BarChart3 }, // ★ NEW
+  { name: "Analytics",       href: "/prediction-analytics", icon: BarChart3 },
   { name: "Plans",           href: "/plans",           icon: Crown },
   { name: "Settings",        href: "/settings",        icon: Settings },
 ];
