@@ -53,7 +53,6 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Mobile menu button */}
       <Button
         variant="ghost"
         size="sm"
@@ -64,7 +63,6 @@ export default function Sidebar() {
         <Menu className="h-6 w-6" />
       </Button>
 
-      {/* Mobile overlay */}
       {isMobileOpen && (
         <div
           className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
@@ -72,14 +70,12 @@ export default function Sidebar() {
         />
       )}
 
-      {/* Sidebar */}
       <div
         className={`fixed inset-y-0 left-0 z-50 bg-white shadow-xl transform transition-all duration-300 ease-in-out lg:translate-x-0 ${
           isMobileOpen ? "translate-x-0" : "-translate-x-full"
         } lg:transform-none ${isCollapsed ? "w-16" : "w-64"}`}
       >
         <div className="flex flex-col h-full">
-          {/* Header */}
           <div className="relative p-6 border-b border-gray-200">
             <Button
               variant="ghost"
@@ -115,7 +111,6 @@ export default function Sidebar() {
             )}
           </div>
 
-          {/* User Profile */}
           <div className="p-6 border-b border-gray-200">
             {!isCollapsed ? (
               <div className="flex items-center space-x-3">
@@ -156,7 +151,6 @@ export default function Sidebar() {
             )}
           </div>
 
-          {/* Navigation */}
           <nav className="flex-1 p-6 overflow-hidden">
             <div className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
               <ul className="space-y-2">
@@ -185,7 +179,6 @@ export default function Sidebar() {
             </div>
           </nav>
 
-          {/* Footer */}
           <div className="p-6 border-t border-gray-200">
             <Button
               variant="ghost"
