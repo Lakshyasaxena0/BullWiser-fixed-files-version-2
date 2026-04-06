@@ -109,26 +109,31 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   }
 
   // ─── CRON JOB: Prediction Monitoring ────────────────────────────────────────
-  // Run daily at midnight to check predictions that reached their target date
-  cron.schedule('0 0 * * *', async () => {
-    log('🔄 [Cron] Starting daily prediction monitoring...');
+  // ★★★ UPDATED: Now runs every 2 hours (12 times per day) ★★★
+  // 
+  // Schedule: '0 */2 * * *'
+  //   - Minute: 0 (top of the hour)
+  //   - Hour: Every 2 hours (0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22)
+  //   - Day: Every day
+  // 
+  // Execution times: 12:00 AM, 2:00 AM, 4:00 AM, 6:00 AM, 8:00 AM, 10:00 AM,
+  //                  12:00 PM, 2:00 PM, 4:00 PM, 6:00 PM, 8:00 PM, 10:00 PM
+  // 
+  // Previous schedule: '0 0 * * *' (once daily at midnight)
+  // ─────────────────────────────────────────────────────────────────────────────
+  cron.schedule('0 */2 * * *', async () => {
+    const now = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true });
+    log(`🔄 [Cron] Starting prediction monitoring at ${now}...`);
     try {
       await predictionMonitoringService.monitorDuePredictions();
-      log('✅ [Cron] Daily prediction monitoring completed successfully');
+      log('✅ [Cron] Prediction monitoring completed successfully');
     } catch (error) {
       log('❌ [Cron] Prediction monitoring failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
       console.error('[Cron] Full error:', error);
     }
   });
 
-  // Optional: Run every 6 hours for more frequent checks
-  // Uncomment if you want more frequent monitoring
-  // cron.schedule('0 */6 * * *', async () => {
-  //   log('🔄 [Cron] Running 6-hour prediction check...');
-  //   await predictionMonitoringService.monitorDuePredictions();
-  // });
-
-  log('⏰ Prediction monitoring cron job scheduled (daily at midnight)');
+  log('⏰ Prediction monitoring cron job scheduled (every 2 hours, 12 times per day)');
   // ─────────────────────────────────────────────────────────────────────────────
 
   const port = parseInt(process.env.PORT || "5000", 10);
