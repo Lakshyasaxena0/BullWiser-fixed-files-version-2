@@ -16,20 +16,23 @@ import {
   ChevronRight,
   History,
   BarChart3,
+  LineChart,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { BullWiserLogo } from "@/components/BullWiserLogo";
 
+// ★★★ CORRECTED NAVIGATION - Market Outlook + Analytics ★★★
 const navigation = [
-  { name: "Dashboard",       href: "/",               icon: LayoutDashboard },
-  { name: "Portfolio",       href: "/portfolio",       icon: Briefcase },
-  { name: "Notifications",   href: "/notifications",   icon: Bell },
-  { name: "Subscription",    href: "/subscription",    icon: CreditCard },
-  { name: "Predictions",     href: "/predictions",     icon: TrendingUp },
-  { name: "Trading History", href: "/trading-history", icon: History },
-  { name: "Analytics",       href: "/prediction-analytics", icon: BarChart3 },
-  { name: "Plans",           href: "/plans",           icon: Crown },
-  { name: "Settings",        href: "/settings",        icon: Settings },
+  { name: "Dashboard",       href: "/",                    icon: LayoutDashboard },
+  { name: "Portfolio",       href: "/portfolio",           icon: Briefcase },
+  { name: "Notifications",   href: "/notifications",       icon: Bell },
+  { name: "Subscription",    href: "/subscription",        icon: CreditCard },
+  { name: "Predictions",     href: "/predictions",         icon: TrendingUp },
+  { name: "Trading History", href: "/trading-history",     icon: History },
+  { name: "Market Outlook",  href: "/market-outlook",      icon: LineChart },      // ★ RESTORED
+  { name: "Analytics",       href: "/prediction-analytics", icon: BarChart3 },      // ★ NEW
+  { name: "Plans",           href: "/plans",               icon: Crown },
+  { name: "Settings",        href: "/settings",            icon: Settings },
 ];
 
 export default function Sidebar() {
