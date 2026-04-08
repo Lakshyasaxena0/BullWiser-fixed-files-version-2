@@ -4,7 +4,6 @@ import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { useEffect } from "react";
 
-import StatsCards from "@/components/dashboard/stats-cards";
 import MarketOverview from "@/components/dashboard/market-overview";
 import Charts from "@/components/dashboard/charts";
 import ActivityFeed from "@/components/dashboard/activity-feed";
@@ -39,8 +38,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <StatsCards activePredictions={(activePredictions as any[])?.length || 0} subscriptions={subscriptions} />
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <MarketOverview marketData={marketData} />
         <StockRatePanel />
