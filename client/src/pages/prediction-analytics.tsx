@@ -83,6 +83,18 @@ export default function PredictionAnalytics() {
     const isExpanded = expandedId === prediction.id;
     const currencySymbol = prediction.isCrypto ? '$' : '₹';
     
+    // Parse planetary data if it's a JSON string
+    let parsedPlanetaryData = null;
+    if (prediction.planetaryData) {
+      try {
+        parsedPlanetaryData = typeof prediction.planetaryData === 'string' 
+          ? JSON.parse(prediction.planetaryData) 
+          : prediction.planetaryData;
+      } catch (e) {
+        console.error('Failed to parse planetary data:', e);
+      }
+    }
+    
     // Determine direction
     let directionIcon = Minus;
     let directionColor = 'text-gray-600';
@@ -220,18 +232,18 @@ export default function PredictionAnalytics() {
               )}
 
               {/* Planetary Data */}
-              {prediction.planetaryData && (
+              {parsedPlanetaryData && Object.keys(parsedPlanetaryData).length > 0 && (
                 <div className="p-4 bg-indigo-50 rounded-lg">
                   <h4 className="font-semibold text-indigo-900 mb-3 flex items-center gap-2">
                     🌍 Planetary Positions at Prediction Time
                   </h4>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-                    {Object.entries(prediction.planetaryData).map(([planet, data]: [string, any]) => {
+                    {Object.entries(parsedPlanetaryData).map(([planet, data]: [string, any]) => {
                       if (!data || typeof data !== 'object') {
                         return (
                           <div key={planet} className="flex items-center gap-2">
-                            <span className="font-medium capitalize">{planet}:</span>
-                            <span className="text-indigo-700">{data}</span>
+                            <span className="font-medium capitalize text-indigo-900">{planet}:</span>
+                            <span className="text-indigo-700">{String(data)}</span>
                           </div>
                         );
                       }
