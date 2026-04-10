@@ -46,6 +46,11 @@ export default function Predictions() {
     }
   }, [isAuthenticated, isLoading]);
 
+  // ★ Clear prediction result when horizon, symbol, or mode changes
+  useEffect(() => {
+    setPredResult(null);
+  }, [horizon, symbol, mode, riskLevel, predType]);
+
   useEffect(() => {
     const t = setTimeout(async () => {
       if (searchQuery.length < 2) { setSearchResults([]); setSearchAttempted(false); return; }
@@ -86,11 +91,30 @@ export default function Predictions() {
     mutationFn: async () => {
       if (!symbol) throw new Error("Please select a stock or crypto symbol");
       const when = getTargetDateFromHorizon();
+      
+      // ★ Add timestamp to force fresh prediction
+      const timestamp = Date.now();
+      
       if (predType === "stock") {
-        const res = await apiRequest("POST", "/api/predict", { stock: symbol, when, mode, riskLevel });
+        const res = await apiRequest("POST", "/api/predict", { 
+          stock: symbol, 
+          when, 
+          mode, 
+          riskLevel,
+          _timestamp: timestamp  // Force fresh calculation
+        });
         return await res.json();
       } else {
-        const res = await apiRequest("POST", "/api/crypto/predict", { crypto: symbol, when, mode, riskLevel, tradesPerDay: 1, cryptoValue: 10000, duration: "daily" });
+        const res = await apiRequest("POST", "/api/crypto/predict", { 
+          crypto: symbol, 
+          when, 
+          mode, 
+          riskLevel, 
+          tradesPerDay: 1, 
+          cryptoValue: 10000, 
+          duration: "daily",
+          _timestamp: timestamp  // Force fresh calculation
+        });
         return await res.json();
       }
     },
@@ -153,6 +177,18 @@ export default function Predictions() {
     return { upside, downside, midChange, range, mid: mid.toFixed(2) };
   };
 
+  // ★ Get human-readable horizon text
+  const getHorizonText = () => {
+    if (horizon === "custom") return new Date(targetDate).toLocaleDateString("en-IN");
+    if (horizon === "1d") return "tomorrow";
+    if (horizon === "1w") return "next week";
+    if (horizon === "1m") return "next month";
+    if (horizon === "3m") return "3 months";
+    if (horizon === "6m") return "6 months";
+    if (horizon === "1y") return "next year";
+    return horizon;
+  };
+
   // ── Sliding toggle ───────────────────────────────────────────────────────
   const PredTypeToggle = () => {
     const isStock = predType === "stock";
@@ -165,6 +201,7 @@ export default function Predictions() {
             const next = isStock ? "crypto" : "stock";
             setPredType(next as "stock" | "crypto");
             setSymbol(""); setSearchQuery(""); setSearchResults([]); setSearchAttempted(false);
+            setPredResult(null);  // ★ Clear result when switching type
           }}
         >
           <div className={`absolute top-1 bottom-1 w-[calc(50%-4px)] rounded-lg shadow-sm transition-all duration-300 ease-in-out
@@ -302,7 +339,7 @@ export default function Predictions() {
 
                 <div className="space-y-2">
                   <Label>Prediction Horizon</Label>
-                  <Select value={horizon} onValueChange={setHorizon}>
+                  <Select value={horizon} onValueChange={(val) => { setHorizon(val); setPredResult(null); }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="1d">1 Day</SelectItem>
@@ -315,13 +352,13 @@ export default function Predictions() {
                     </SelectContent>
                   </Select>
                   {horizon === "custom" && (
-                    <Input type="datetime-local" value={targetDate} onChange={e => setTargetDate(e.target.value)} min={new Date().toISOString().slice(0, 16)} />
+                    <Input type="datetime-local" value={targetDate} onChange={e => { setTargetDate(e.target.value); setPredResult(null); }} min={new Date().toISOString().slice(0, 16)} />
                   )}
                 </div>
 
                 <div className="space-y-2">
                   <Label>Prediction Mode</Label>
-                  <Select value={mode} onValueChange={setMode}>
+                  <Select value={mode} onValueChange={(val) => { setMode(val); setPredResult(null); }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="suggestion">AI + Astro Suggestion</SelectItem>
@@ -332,7 +369,7 @@ export default function Predictions() {
 
                 <div className="space-y-2">
                   <Label>Risk Level</Label>
-                  <Select value={riskLevel} onValueChange={setRiskLevel}>
+                  <Select value={riskLevel} onValueChange={(val) => { setRiskLevel(val); setPredResult(null); }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="low">Conservative (Low Risk)</SelectItem>
@@ -344,7 +381,7 @@ export default function Predictions() {
 
                 <Button className="w-full" onClick={() => predictMutation.mutate()} disabled={!symbol || predictMutation.isPending}>
                   {predictMutation.isPending ? "Generating prediction..." :
-                    `Predict ${symbol || "..."} for ${horizon === "custom" ? "custom date" : horizon === "1d" ? "tomorrow" : horizon === "1w" ? "next week" : horizon === "1m" ? "next month" : horizon === "3m" ? "3 months" : horizon === "6m" ? "6 months" : "next year"}`}
+                    `Predict ${symbol || "..."} for ${getHorizonText()}`}
                 </Button>
               </CardContent>
             </Card>
