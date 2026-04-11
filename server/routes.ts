@@ -53,6 +53,50 @@ function calculateCryptoBillingPrice(mode: string, tradesPerDay: number, cryptoV
   return { mode, tradesPerDay, cryptoValue, duration, basePrice, tradePrice, valueMultiplier, modeMultiplier, subtotal: Math.round(subtotal), afterDurationDiscount: Math.round(discountedPrice), afterReferralDiscount: Math.round(referralDiscountedPrice), autoModeSurcharge: Math.round(autoModeSurcharge), referralDiscountApplied: Math.round(referralDiscount * 100), durationDiscountApplied: Math.round(durationDiscount * 100), finalBill: finalPrice };
 }
 
+// ★ Helper: Calculate time-scaled risk multiplier
+function getTimeScaledRiskMultiplier(targetDate: Date, riskLevel: string, isStock: boolean = true): number {
+  const now = new Date();
+  const daysUntilTarget = Math.max(1, Math.floor((targetDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+  
+  // Base multipliers by risk level
+  const baseMultipliers = {
+    low: 0.015,    // 1.5% for conservative
+    medium: 0.025, // 2.5% for balanced
+    high: 0.04     // 4% for aggressive
+  };
+  
+  const baseMultiplier = baseMultipliers[riskLevel as keyof typeof baseMultipliers] || baseMultipliers.medium;
+  
+  // Time scaling factors
+  // 1 day = 1x, 1 week = 1.5x, 1 month = 2.5x, 3 months = 4x, 6 months = 6x, 1 year = 10x
+  let timeMultiplier = 1;
+  if (daysUntilTarget <= 1) {
+    timeMultiplier = 1;
+  } else if (daysUntilTarget <= 7) {
+    timeMultiplier = 1 + (daysUntilTarget / 7) * 0.5; // Scale from 1x to 1.5x
+  } else if (daysUntilTarget <= 30) {
+    timeMultiplier = 1.5 + ((daysUntilTarget - 7) / 23) * 1.0; // Scale from 1.5x to 2.5x
+  } else if (daysUntilTarget <= 90) {
+    timeMultiplier = 2.5 + ((daysUntilTarget - 30) / 60) * 1.5; // Scale from 2.5x to 4x
+  } else if (daysUntilTarget <= 180) {
+    timeMultiplier = 4 + ((daysUntilTarget - 90) / 90) * 2; // Scale from 4x to 6x
+  } else if (daysUntilTarget <= 365) {
+    timeMultiplier = 6 + ((daysUntilTarget - 180) / 185) * 4; // Scale from 6x to 10x
+  } else {
+    // Beyond 1 year: cap at 12x to prevent unrealistic ranges
+    timeMultiplier = Math.min(12, 10 + ((daysUntilTarget - 365) / 365) * 2);
+  }
+  
+  // Crypto gets additional volatility multiplier
+  const volatilityMultiplier = isStock ? 1 : 1.5;
+  
+  const finalMultiplier = baseMultiplier * timeMultiplier * volatilityMultiplier;
+  
+  console.log(`[RiskCalc] Days: ${daysUntilTarget}, Base: ${baseMultiplier}, Time: ${timeMultiplier.toFixed(2)}x, Final: ${finalMultiplier.toFixed(4)}`);
+  
+  return finalMultiplier;
+}
+
 let trainingInProgress = false;
 
 async function runRealTraining() {
@@ -189,6 +233,9 @@ export function registerRoutes(app: Express): Server {
       }
       const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
       const upperSymbol = stock.toUpperCase();
+      
+      console.log(`[Predict] Generating prediction for ${upperSymbol} with target date: ${whenDate.toISOString()}`);
+      
       let realTimeQuote = await stockDataService.getStockQuote(upperSymbol, 'NSE');
       if (!realTimeQuote) {
         console.log(`[Predict] NSE failed for ${upperSymbol}, trying BSE...`);
@@ -199,26 +246,79 @@ export function registerRoutes(app: Express): Server {
       }
       const currentPrice = realTimeQuote.lastPrice;
       const historicalData = await stockDataService.getHistoricalData(upperSymbol, 30);
+      
+      // ★ Calculate time-based risk multiplier
+      const riskMultiplier = getTimeScaledRiskMultiplier(whenDate, req.body.riskLevel || 'medium', true);
+      
       let enhancedPrediction: any = null;
       try {
         enhancedPrediction = await aiService.generateEnhancedPrediction(upperSymbol, currentPrice, userId, historicalData, whenDate);
       } catch (pipelineError) {
         console.error('[Predict] AI/Astro pipeline error:', pipelineError);
       }
+      
       if (!enhancedPrediction || !enhancedPrediction.prediction) {
         try {
           const astroPred = await astrologyService.generateAstroPrediction(upperSymbol, whenDate, currentPrice);
-          const riskMultiplier = req.body.riskLevel === 'high' ? 0.04 : req.body.riskLevel === 'low' ? 0.015 : 0.025;
-          enhancedPrediction = { prediction: { direction: astroPred.direction, confidence: astroPred.confidence, priceTarget: { low: Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100, high: Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100 } }, combinedConfidence: astroPred.confidence, finalDirection: astroPred.direction, astroRecommendation: astroPred.recommendation, warnings: astroPred.warnings, analysis: { technicalFactors: [], marketSentiment: 'mixed', keyRisks: astroPred.warnings, recommendation: astroPred.recommendation }, reasoning: 'Vedic astrology analysis', metadata: { aiEnabled: false, feedbackLearningApplied: false } };
+          enhancedPrediction = { 
+            prediction: { 
+              direction: astroPred.direction, 
+              confidence: astroPred.confidence, 
+              priceTarget: { 
+                low: Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100, 
+                high: Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100 
+              } 
+            }, 
+            combinedConfidence: astroPred.confidence, 
+            finalDirection: astroPred.direction, 
+            astroRecommendation: astroPred.recommendation, 
+            warnings: astroPred.warnings, 
+            analysis: { technicalFactors: [], marketSentiment: 'mixed', keyRisks: astroPred.warnings, recommendation: astroPred.recommendation }, 
+            reasoning: 'Vedic astrology analysis', 
+            metadata: { aiEnabled: false, feedbackLearningApplied: false } 
+          };
         } catch {
-          enhancedPrediction = { prediction: { direction: 'neutral', confidence: 50, priceTarget: { low: Math.round(currentPrice * 0.98 * 100) / 100, high: Math.round(currentPrice * 1.02 * 100) / 100 } }, combinedConfidence: 50, finalDirection: 'neutral', astroRecommendation: 'Hold and observe', warnings: [], analysis: { technicalFactors: [], marketSentiment: 'mixed', keyRisks: [], recommendation: 'Hold and observe' }, reasoning: 'Conservative estimate', metadata: { aiEnabled: false, feedbackLearningApplied: false } };
+          enhancedPrediction = { 
+            prediction: { 
+              direction: 'neutral', 
+              confidence: 50, 
+              priceTarget: { 
+                low: Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100, 
+                high: Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100 
+              } 
+            }, 
+            combinedConfidence: 50, 
+            finalDirection: 'neutral', 
+            astroRecommendation: 'Hold and observe', 
+            warnings: [], 
+            analysis: { technicalFactors: [], marketSentiment: 'mixed', keyRisks: [], recommendation: 'Hold and observe' }, 
+            reasoning: 'Conservative estimate', 
+            metadata: { aiEnabled: false, feedbackLearningApplied: false } 
+          };
+        }
+      } else {
+        // ★ If AI gave prediction, also scale it by time horizon
+        if (enhancedPrediction.prediction?.priceTarget) {
+          const aiLow = enhancedPrediction.prediction.priceTarget.low;
+          const aiHigh = enhancedPrediction.prediction.priceTarget.high;
+          const aiRange = aiHigh - aiLow;
+          const center = currentPrice;
+          
+          // Apply time scaling to AI's range as well
+          enhancedPrediction.prediction.priceTarget.low = Math.round(center * (1 - riskMultiplier) * 100) / 100;
+          enhancedPrediction.prediction.priceTarget.high = Math.round(center * (1 + riskMultiplier) * 100) / 100;
+          
+          console.log(`[Predict] AI prediction scaled: ${aiLow}-${aiHigh} → ${enhancedPrediction.prediction.priceTarget.low}-${enhancedPrediction.prediction.priceTarget.high}`);
         }
       }
+      
       const isDevMode = process.env.NODE_ENV === 'development';
       const showAstroDetails = isDevMode && req.user?.role === 'developer';
-      const finalPrediction = { stock: upperSymbol, when: whenDate.toISOString(), currentPrice, predLow: enhancedPrediction.prediction?.priceTarget?.low || Math.round(currentPrice * 0.98 * 100) / 100, predHigh: enhancedPrediction.prediction?.priceTarget?.high || Math.round(currentPrice * 1.02 * 100) / 100, confidence: enhancedPrediction.combinedConfidence || enhancedPrediction.prediction?.confidence || 50, exchange: realTimeQuote.exchange, direction: enhancedPrediction.finalDirection || 'neutral', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || enhancedPrediction.analysis?.keyRisks || [], recommendation: enhancedPrediction.astroRecommendation || enhancedPrediction.analysis?.recommendation || 'Hold and observe', reasoning: enhancedPrediction.reasoning || 'Astrology-based analysis', aiPowered: enhancedPrediction.metadata?.aiEnabled || false, livePriceAvailable: currentPrice > 0, feedbackEnhanced: enhancedPrediction.metadata?.feedbackLearningApplied || false, companyName: realTimeQuote.companyName, ...(showAstroDetails && { astrologyBias: realTimeQuote.astrologyBias || 0, horaInfluence: realTimeQuote.horaInfluence, astroFactors: enhancedPrediction.astroFactors, astroStrength: enhancedPrediction.astroStrength, astroPowered: true }) };
+      const finalPrediction = { stock: upperSymbol, when: whenDate.toISOString(), currentPrice, predLow: enhancedPrediction.prediction?.priceTarget?.low || Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100, predHigh: enhancedPrediction.prediction?.priceTarget?.high || Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100, confidence: enhancedPrediction.combinedConfidence || enhancedPrediction.prediction?.confidence || 50, exchange: realTimeQuote.exchange, direction: enhancedPrediction.finalDirection || 'neutral', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || enhancedPrediction.analysis?.keyRisks || [], recommendation: enhancedPrediction.astroRecommendation || enhancedPrediction.analysis?.recommendation || 'Hold and observe', reasoning: enhancedPrediction.reasoning || 'Astrology-based analysis', aiPowered: enhancedPrediction.metadata?.aiEnabled || false, livePriceAvailable: currentPrice > 0, feedbackEnhanced: enhancedPrediction.metadata?.feedbackLearningApplied || false, companyName: realTimeQuote.companyName, ...(showAstroDetails && { astrologyBias: realTimeQuote.astrologyBias || 0, horaInfluence: realTimeQuote.horaInfluence, astroFactors: enhancedPrediction.astroFactors, astroStrength: enhancedPrediction.astroStrength, astroPowered: true }) };
+      
       const statisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Standard technical analysis applied';
       const astroReasoning = enhancedPrediction.astroRecommendation || (enhancedPrediction.warnings?.length > 0 ? enhancedPrediction.warnings.join('; ') : null);
+      
       let planetaryData: any = null;
       try {
         const astroData = await astrologyService.getCurrentAstrology(whenDate);
@@ -226,7 +326,9 @@ export function registerRoutes(app: Express): Server {
       } catch (astroError) {
         console.log('[Predict] Could not fetch planetary data:', astroError);
       }
+      
       await storage.createPrediction({ userId, stock: finalPrediction.stock, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: req.body.mode || 'ai-astro-combined', riskLevel: req.body.riskLevel || 'medium', targetDate: whenDate, statisticalReasoning, astroReasoning, planetaryData: planetaryData ? JSON.stringify(planetaryData) : null });
+      
       return res.json(finalPrediction);
     } catch (error) {
       console.error('Prediction error:', error);
@@ -240,13 +342,33 @@ export function registerRoutes(app: Express): Server {
       const userId = req.user.id;
       const cryptoQuote = await cryptoDataService.getCryptoQuote(cryptoSymbol.toUpperCase());
       if (!cryptoQuote) return res.status(404).json({ message: "Cryptocurrency not found" });
+      
       const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
       const currentPrice = cryptoQuote.adjustedPrice || cryptoQuote.lastPrice;
+      
+      console.log(`[CryptoPredict] Generating prediction for ${cryptoSymbol} with target date: ${whenDate.toISOString()}`);
+      
+      // ★ Calculate time-based risk multiplier for crypto (higher volatility)
+      const riskMultiplier = getTimeScaledRiskMultiplier(whenDate, riskLevel, false);
+      
       const historicalData = await cryptoDataService.getCryptoHistoricalData(cryptoSymbol.toUpperCase(), 30);
       const enhancedPrediction = await aiService.generateEnhancedCryptoPrediction(cryptoSymbol.toUpperCase(), currentPrice, userId, historicalData, cryptoQuote);
-      const finalPrediction = { crypto: cryptoSymbol.toUpperCase(), name: cryptoQuote.name, when: whenDate.toISOString(), currentPrice, predLow: enhancedPrediction.prediction?.priceTarget?.low || currentPrice * 0.92, predHigh: enhancedPrediction.prediction?.priceTarget?.high || currentPrice * 1.08, confidence: enhancedPrediction.combinedConfidence || 65, direction: enhancedPrediction.finalDirection || 'neutral', volatility: 'high', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || [], recommendation: enhancedPrediction.astroRecommendation || 'Hold and observe', reasoning: enhancedPrediction.reasoning || 'Astrology-based crypto analysis', marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h, aiPowered: enhancedPrediction.metadata?.aiEnabled || false, livePriceAvailable: currentPrice > 0 };
+      
+      // ★ Apply time scaling to crypto predictions
+      let predLow, predHigh;
+      if (enhancedPrediction.prediction?.priceTarget) {
+        predLow = Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100;
+        predHigh = Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100;
+      } else {
+        predLow = currentPrice * (1 - riskMultiplier);
+        predHigh = currentPrice * (1 + riskMultiplier);
+      }
+      
+      const finalPrediction = { crypto: cryptoSymbol.toUpperCase(), name: cryptoQuote.name, when: whenDate.toISOString(), currentPrice, predLow, predHigh, confidence: enhancedPrediction.combinedConfidence || 65, direction: enhancedPrediction.finalDirection || 'neutral', volatility: 'high', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || [], recommendation: enhancedPrediction.astroRecommendation || 'Hold and observe', reasoning: enhancedPrediction.reasoning || 'Astrology-based crypto analysis', marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h, aiPowered: enhancedPrediction.metadata?.aiEnabled || false, livePriceAvailable: currentPrice > 0 };
+      
       const cryptoStatisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Crypto technical analysis with volatility adjustment';
       const cryptoAstroReasoning = enhancedPrediction.astroRecommendation || null;
+      
       let cryptoPlanetaryData: any = null;
       try {
         const astroData = await astrologyService.getCurrentAstrology(whenDate);
@@ -254,7 +376,9 @@ export function registerRoutes(app: Express): Server {
       } catch (astroError) {
         console.log('[CryptoPredict] Could not fetch planetary data:', astroError);
       }
+      
       await storage.createPrediction({ userId, stock: `CRYPTO_${finalPrediction.crypto}`, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode, riskLevel, targetDate: whenDate, statisticalReasoning: cryptoStatisticalReasoning, astroReasoning: cryptoAstroReasoning, planetaryData: cryptoPlanetaryData ? JSON.stringify(cryptoPlanetaryData) : null });
+      
       return res.json(finalPrediction);
     } catch (error) {
       console.error('Crypto prediction error:', error);
@@ -273,11 +397,22 @@ export function registerRoutes(app: Express): Server {
       const cryptoQuote = await cryptoDataService.getCryptoQuote(cryptoSymbol.toUpperCase());
       if (!cryptoQuote) return res.status(404).json({ message: "Cryptocurrency not found" });
       const currentPrice = cryptoQuote.adjustedPrice || cryptoQuote.lastPrice;
+      
+      // ★ Calculate time-based risk multiplier
+      const riskMultiplier = getTimeScaledRiskMultiplier(whenDate, req.body.riskLevel || 'high', false);
+      
       const historicalData = await cryptoDataService.getCryptoHistoricalData(cryptoSymbol.toUpperCase(), 30);
       const enhancedPrediction = await aiService.generateEnhancedCryptoPrediction(cryptoSymbol.toUpperCase(), currentPrice, userId, historicalData, cryptoQuote);
-      const finalPrediction = { crypto: cryptoSymbol.toUpperCase(), name: cryptoQuote.name, when: whenDate.toISOString(), currentPrice, predLow: enhancedPrediction.prediction?.priceTarget?.low || currentPrice * 0.92, predHigh: enhancedPrediction.prediction?.priceTarget?.high || currentPrice * 1.08, confidence: enhancedPrediction.combinedConfidence || 65, direction: enhancedPrediction.finalDirection || 'neutral', volatility: 'high', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || [], recommendation: enhancedPrediction.astroRecommendation || 'Hold and observe', marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h, aiPowered: enhancedPrediction.metadata?.aiEnabled || false, subscriptionId };
+      
+      // ★ Apply time scaling
+      const predLow = Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100;
+      const predHigh = Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100;
+      
+      const finalPrediction = { crypto: cryptoSymbol.toUpperCase(), name: cryptoQuote.name, when: whenDate.toISOString(), currentPrice, predLow, predHigh, confidence: enhancedPrediction.combinedConfidence || 65, direction: enhancedPrediction.finalDirection || 'neutral', volatility: 'high', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || [], recommendation: enhancedPrediction.astroRecommendation || 'Hold and observe', marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h, aiPowered: enhancedPrediction.metadata?.aiEnabled || false, subscriptionId };
+      
       const cryptoStatisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Crypto technical analysis with volatility adjustment';
       const cryptoAstroReasoning = enhancedPrediction.astroRecommendation || null;
+      
       let cryptoPlanetaryData: any = null;
       try {
         const astroData = await astrologyService.getCurrentAstrology(whenDate);
@@ -285,7 +420,9 @@ export function registerRoutes(app: Express): Server {
       } catch (astroError) {
         console.log('[CryptoPredict/Generate] Could not fetch planetary data:', astroError);
       }
+      
       await storage.createPrediction({ userId, stock: `CRYPTO_${finalPrediction.crypto}`, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: subscription.mode, riskLevel: req.body.riskLevel || 'high', targetDate: whenDate, statisticalReasoning: cryptoStatisticalReasoning, astroReasoning: cryptoAstroReasoning, planetaryData: cryptoPlanetaryData ? JSON.stringify(cryptoPlanetaryData) : null });
+      
       return res.json(finalPrediction);
     } catch (error) {
       res.status(500).json({ message: "Error generating crypto prediction" });
