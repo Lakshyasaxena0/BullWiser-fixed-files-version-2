@@ -238,25 +238,34 @@ export default function PredictionAnalytics() {
                     🌍 Planetary Positions at Prediction Time
                   </h4>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-                    {Object.entries(parsedPlanetaryData).map(([planet, data]: [string, any]) => {
-                      if (!data || typeof data !== 'object') {
-                        return (
-                          <div key={planet} className="flex items-center gap-2">
-                            <span className="font-medium capitalize text-indigo-900">{planet}:</span>
-                            <span className="text-indigo-700">{String(data)}</span>
-                          </div>
-                        );
-                      }
-                      return (
-                        <div key={planet} className="flex flex-col">
-                          <span className="font-medium capitalize text-indigo-900">{planet}</span>
-                          <span className="text-xs text-indigo-700">
-                            {data.sign || ''} {data.house ? `(House ${data.house})` : ''} 
-                            {data.degree ? ` ${data.degree}°` : ''}
-                          </span>
-                        </div>
-                      );
-                    })}
+                    {Object.entries(parsedPlanetaryData)
+                      .filter(([_, data]) => data !== null && data !== undefined)
+                      .map(([planet, data]: [string, any]) => {
+                        // Handle simple string/number values (hora, nakshatra)
+                        if (typeof data === 'string' || typeof data === 'number') {
+                          return (
+                            <div key={planet} className="flex items-center gap-2">
+                              <span className="font-medium capitalize text-indigo-900">{planet}:</span>
+                              <span className="text-indigo-700">{data}</span>
+                            </div>
+                          );
+                        }
+                        
+                        // Handle planetary objects with sign/house/degree
+                        if (data && typeof data === 'object') {
+                          return (
+                            <div key={planet} className="flex flex-col">
+                              <span className="font-medium capitalize text-indigo-900">{planet}</span>
+                              <span className="text-xs text-indigo-700">
+                                {data.sign || ''} {data.house ? `(House ${data.house})` : ''} 
+                                {data.degree ? ` ${data.degree.toFixed(1)}°` : ''}
+                              </span>
+                            </div>
+                          );
+                        }
+                        
+                        return null;
+                      })}
                   </div>
                 </div>
               )}
