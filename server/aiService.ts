@@ -375,22 +375,31 @@ Return JSON:
     const blendedLow  = Math.round(((statsLow  * 0.5) + (astroLow  * 0.5)) * 100) / 100;
     const blendedHigh = Math.round(((statsHigh * 0.5) + (astroHigh * 0.5)) * 100) / 100;
 
-    // ── Technical factors: merge stats + astro ────────────────────────────
+    // ── ★ SEPARATE Statistical and Astrological factors ───────────────────
+    // STATISTICAL FACTORS (pure technical analysis - NO astro)
     const statsTechFactors = aiStatsAnalysis?.technicalFactors ?? statsResult?.keyFindings ?? [];
-    const astroKeyFactors  = (advancedAstro?.keyFactors ?? []).slice(0, 2).map((f: string) => `[${sector}] ${f}`);
-    const allTechFactors   = [...statsTechFactors.slice(0, 3), ...astroKeyFactors].slice(0, 5);
+    
+    // ASTROLOGICAL FACTORS (pure astro - NO technical)
+    const astroKeyFactors: string[] = [];
+    if (advancedAstro?.keyFactors) {
+      astroKeyFactors.push(...(advancedAstro.keyFactors.slice(0, 2).map((f: string) => `[${sector}] ${f}`)));
+    }
+    
+    // Yoga / Transit factor labels (ASTROLOGICAL)
+    if (yogaBonus > 10)    astroKeyFactors.push('D-10: Strong Raj/Dhana Yoga supports momentum');
+    if (transitImpact > 8) astroKeyFactors.push(`Planetary transits: ${Math.round(transitImpact / 3)} benefic influences active`);
 
-    // ── Yoga / Transit factor labels ──────────────────────────────────────
-    if (yogaBonus > 10)   allTechFactors.push('D-10: Strong Raj/Dhana Yoga supports momentum');
-    if (transitImpact > 8) allTechFactors.push(`Planetary transits: ${Math.round(transitImpact / 3)} benefic influences active`);
-
-    // ── Risks: merge stats + astro ────────────────────────────────────────
+    // ── ★ SEPARATE Statistical and Astrological risks ─────────────────────
+    // STATISTICAL RISKS
     const statsRisks = aiStatsAnalysis?.keyRisks ?? statsResult?.keyRisks ?? [];
-    const astroRisks = astroPrediction?.warnings ?? [];
-    const allRisks   = [...statsRisks.slice(0, 2), ...astroRisks.slice(0, 2)].slice(0, 4);
-
-    if (yogaBonus < -10)   allRisks.push('D-10: Arishta Yoga — increased downside risk');
-    if (transitImpact < -8) allRisks.push(`Planetary transits: ${Math.round(Math.abs(transitImpact) / 3)} malefic influences`);
+    
+    // ASTROLOGICAL RISKS
+    const astroRisks = [...(astroPrediction?.warnings ?? [])];
+    if (yogaBonus < -10)    astroRisks.push('D-10: Arishta Yoga — increased downside risk');
+    if (transitImpact < -8) astroRisks.push(`Planetary transits: ${Math.round(Math.abs(transitImpact) / 3)} malefic influences`);
+    
+    // Combined risks for display (but keep separate in data structure)
+    const allRisks = [...statsRisks.slice(0, 2), ...astroRisks.slice(0, 2)].slice(0, 4);
 
     // ── Sector timing direction softening ─────────────────────────────────
     if (sectorTiming === 'excellent' && finalDirection === 'bearish') finalDirection = 'neutral';
@@ -448,12 +457,15 @@ Return JSON:
           : 'No conflict',
       },
 
-      // Output fields for frontend
+      // ★ Output fields for frontend - SEPARATED stats and astro
       analysis: {
-        technicalFactors: allTechFactors,
-        marketSentiment:  aiStatsAnalysis?.marketSentiment ?? statsResult?.technicalSummary ?? 'Mixed signals',
-        keyRisks:         allRisks,
-        recommendation:   aiStatsAnalysis?.recommendation  ?? astroPrediction?.recommendation ?? 'Monitor closely',
+        technicalFactors:     statsTechFactors.slice(0, 5),     // ★ PURE STATS ONLY
+        astrologicalFactors:  astroKeyFactors.slice(0, 5),      // ★ PURE ASTRO ONLY
+        marketSentiment:      aiStatsAnalysis?.marketSentiment ?? statsResult?.technicalSummary ?? 'Mixed signals',
+        keyRisks:             allRisks,                         // Combined for display
+        statisticalRisks:     statsRisks,                       // ★ PURE STATS RISKS
+        astrologicalRisks:    astroRisks,                       // ★ PURE ASTRO RISKS
+        recommendation:       aiStatsAnalysis?.recommendation  ?? astroPrediction?.recommendation ?? 'Monitor closely',
       },
       astroRecommendation: astroPrediction?.recommendation ?? '',
       warnings:            allRisks,
