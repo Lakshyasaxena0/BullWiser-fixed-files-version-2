@@ -1,4 +1,3 @@
-import TrendingStocks from "@/components/dashboard/trending-stocks";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useLocation } from "wouter";
@@ -9,7 +8,7 @@ import MarketOverview from "@/components/dashboard/market-overview";
 import Charts from "@/components/dashboard/charts";
 import ActivityFeed from "@/components/dashboard/activity-feed";
 import TrainingStatus from "@/components/dashboard/training-status";
-import StockRatePanel from "@/components/dashboard/stock-rate-panel";
+import TrendingStocks from "@/components/dashboard/trending-stocks";
 import { TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
