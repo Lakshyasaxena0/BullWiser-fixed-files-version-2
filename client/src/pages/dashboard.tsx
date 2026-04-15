@@ -1,3 +1,4 @@
+import TrendingStocks from "@/components/dashboard/trending-stocks";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useLocation } from "wouter";
