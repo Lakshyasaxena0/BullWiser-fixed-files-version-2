@@ -319,12 +319,38 @@ export function registerRoutes(app: Express): Server {
       const statisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Standard technical analysis applied';
       const astroReasoning = enhancedPrediction.astroRecommendation || (enhancedPrediction.warnings?.length > 0 ? enhancedPrediction.warnings.join('; ') : null);
       
+      // ✅ CORRECTED: Properly convert planetaryPositions array to object
       let planetaryData: any = null;
       try {
         const astroData = await astrologyService.getCurrentAstrology(whenDate);
-        planetaryData = { sun: astroData.planetaryPositions?.sun || null, moon: astroData.planetaryPositions?.moon || null, mercury: astroData.planetaryPositions?.mercury || null, venus: astroData.planetaryPositions?.venus || null, mars: astroData.planetaryPositions?.mars || null, jupiter: astroData.planetaryPositions?.jupiter || null, saturn: astroData.planetaryPositions?.saturn || null, hora: astroData.horaLord || null, nakshatra: astroData.currentNakshatra || null };
+        
+        // Convert planetaryPositions array to object
+        const planetaryObj: any = {};
+        if (astroData.planetaryPositions && Array.isArray(astroData.planetaryPositions)) {
+          astroData.planetaryPositions.forEach((p: any) => {
+            planetaryObj[p.planet] = {
+              sign: p.sign,
+              degree: Math.round(p.degree * 10) / 10,
+              house: Math.floor((p.degree / 30) * 12) + 1,
+              retrograde: p.retrograde || false
+            };
+          });
+        }
+        
+        planetaryData = {
+          hora: astroData.hora,          // ✅ Correct property name
+          tithi: astroData.tithi,
+          nakshatra: astroData.nakshatra, // ✅ Correct property name
+          yoga: astroData.yoga,
+          karana: astroData.karana,
+          lunarPhase: astroData.lunarPhase,
+          planetaryPositions: planetaryObj // ✅ Converted array to object
+        };
+        
+        console.log('[Predict] Planetary data saved:', Object.keys(planetaryObj).length, 'planets');
       } catch (astroError) {
-        console.log('[Predict] Could not fetch planetary data:', astroError);
+        console.error('[Predict] Could not fetch planetary data:', astroError);
+        planetaryData = null;
       }
       
       await storage.createPrediction({ userId, stock: finalPrediction.stock, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: req.body.mode || 'ai-astro-combined', riskLevel: req.body.riskLevel || 'medium', targetDate: whenDate, statisticalReasoning, astroReasoning, planetaryData: planetaryData ? JSON.stringify(planetaryData) : null });
