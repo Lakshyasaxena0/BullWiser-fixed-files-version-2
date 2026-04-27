@@ -19,7 +19,7 @@ const openaiClient = new OpenAI({
 
 // ── Fallback: Groq llama-3.3-70b (free, fast, no quota issues) ───────────────
 const groqClient = new OpenAI({
-  apiKey:   process.env.OPENAI_API_KEY || '',   // same env var on Render
+  apiKey:   process.env.Groq_API_key || '',   // same env var on Render
   baseURL: 'https://api.groq.com/openai/v1',
 });
 
