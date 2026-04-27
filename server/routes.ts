@@ -319,38 +319,39 @@ export function registerRoutes(app: Express): Server {
       const statisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Standard technical analysis applied';
       const astroReasoning = enhancedPrediction.astroRecommendation || (enhancedPrediction.warnings?.length > 0 ? enhancedPrediction.warnings.join('; ') : null);
       
-      // ✅ CORRECTED: Properly convert planetaryPositions array to object
+      // ★★★ FIXED: Save planetary data in correct format for frontend display
       let planetaryData: any = null;
       try {
         const astroData = await astrologyService.getCurrentAstrology(whenDate);
         
-        // Convert planetaryPositions array to object
+        // Transform planetaryPositions array into object with planet names as keys
         const planetaryObj: any = {};
         if (astroData.planetaryPositions && Array.isArray(astroData.planetaryPositions)) {
-          astroData.planetaryPositions.forEach((p: any) => {
-            planetaryObj[p.planet] = {
+          astroData.planetaryPositions.forEach(p => {
+            const planetKey = p.planet.toLowerCase();
+            planetaryObj[planetKey] = {
               sign: p.sign,
-              degree: Math.round(p.degree * 10) / 10,
-              house: Math.floor((p.degree / 30) * 12) + 1,
+              degree: Math.round(p.degree * 10) / 10,  // Round to 1 decimal
+              house: Math.floor((p.degree / 30) * 12) + 1,  // Calculate house from degree
               retrograde: p.retrograde || false
             };
           });
         }
         
+        // Combine planetary positions with Vedic elements
         planetaryData = {
-          hora: astroData.hora,          // ✅ Correct property name
-          tithi: astroData.tithi,
-          nakshatra: astroData.nakshatra, // ✅ Correct property name
-          yoga: astroData.yoga,
-          karana: astroData.karana,
-          lunarPhase: astroData.lunarPhase,
-          planetaryPositions: planetaryObj // ✅ Converted array to object
+          ...planetaryObj,  // sun, moon, mercury, venus, mars, jupiter, saturn, etc.
+          hora: astroData.hora || null,
+          tithi: astroData.tithi || null,
+          nakshatra: astroData.nakshatra || null,
+          yoga: astroData.yoga || null,
+          karana: astroData.karana || null,
+          lunarPhase: astroData.lunarPhase || null
         };
         
-        console.log('[Predict] Planetary data saved:', Object.keys(planetaryObj).length, 'planets');
+        console.log('[Predict] ✅ Planetary data saved:', Object.keys(planetaryData).join(', '));
       } catch (astroError) {
-        console.error('[Predict] Could not fetch planetary data:', astroError);
-        planetaryData = null;
+        console.log('[Predict] ❌ Could not fetch planetary data:', astroError);
       }
       
       await storage.createPrediction({ userId, stock: finalPrediction.stock, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: req.body.mode || 'ai-astro-combined', riskLevel: req.body.riskLevel || 'medium', targetDate: whenDate, statisticalReasoning, astroReasoning, planetaryData: planetaryData ? JSON.stringify(planetaryData) : null });
@@ -395,12 +396,38 @@ export function registerRoutes(app: Express): Server {
       const cryptoStatisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Crypto technical analysis with volatility adjustment';
       const cryptoAstroReasoning = enhancedPrediction.astroRecommendation || null;
       
+      // ★★★ FIXED: Save planetary data for crypto in correct format
       let cryptoPlanetaryData: any = null;
       try {
         const astroData = await astrologyService.getCurrentAstrology(whenDate);
-        cryptoPlanetaryData = { sun: astroData.planetaryPositions?.sun || null, moon: astroData.planetaryPositions?.moon || null, mercury: astroData.planetaryPositions?.mercury || null, venus: astroData.planetaryPositions?.venus || null, mars: astroData.planetaryPositions?.mars || null, jupiter: astroData.planetaryPositions?.jupiter || null, saturn: astroData.planetaryPositions?.saturn || null, hora: astroData.horaLord || null, nakshatra: astroData.currentNakshatra || null };
+        
+        // Transform planetaryPositions array into object with planet names as keys
+        const planetaryObj: any = {};
+        if (astroData.planetaryPositions && Array.isArray(astroData.planetaryPositions)) {
+          astroData.planetaryPositions.forEach(p => {
+            const planetKey = p.planet.toLowerCase();
+            planetaryObj[planetKey] = {
+              sign: p.sign,
+              degree: Math.round(p.degree * 10) / 10,
+              house: Math.floor((p.degree / 30) * 12) + 1,
+              retrograde: p.retrograde || false
+            };
+          });
+        }
+        
+        cryptoPlanetaryData = {
+          ...planetaryObj,
+          hora: astroData.hora || null,
+          tithi: astroData.tithi || null,
+          nakshatra: astroData.nakshatra || null,
+          yoga: astroData.yoga || null,
+          karana: astroData.karana || null,
+          lunarPhase: astroData.lunarPhase || null
+        };
+        
+        console.log('[CryptoPredict] ✅ Planetary data saved:', Object.keys(cryptoPlanetaryData).join(', '));
       } catch (astroError) {
-        console.log('[CryptoPredict] Could not fetch planetary data:', astroError);
+        console.log('[CryptoPredict] ❌ Could not fetch planetary data:', astroError);
       }
       
       await storage.createPrediction({ userId, stock: `CRYPTO_${finalPrediction.crypto}`, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode, riskLevel, targetDate: whenDate, statisticalReasoning: cryptoStatisticalReasoning, astroReasoning: cryptoAstroReasoning, planetaryData: cryptoPlanetaryData ? JSON.stringify(cryptoPlanetaryData) : null });
