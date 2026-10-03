@@ -51,7 +51,9 @@ export class PredictionMonitoringService {
             lte(predictions.targetDate, now),
             eq(predictions.isActive, true)
           )
-        );
+        )
+        .orderBy(predictions.targetDate)
+        .limit(100); // work through a backlog in batches so one run can't take hours
 
       console.log(`[Monitor] Found ${duePredictions.length} predictions due`);
 
@@ -86,11 +88,14 @@ export class PredictionMonitoringService {
       // Fetch current/actual price
       let actualPrice: number | null = null;
       
+      // Never let one slow data provider stall the whole run
+      const withTimeout = <T>(p: Promise<T>) =>
+        Promise.race([p, new Promise<null>(r => setTimeout(() => r(null), 15_000))]);
       if (isCrypto) {
-        const quote = await cryptoDataService.getCryptoQuote(symbol);
+        const quote: any = await withTimeout(cryptoDataService.getCryptoQuote(symbol));
         actualPrice = quote?.lastPrice || null;
       } else {
-        const quote = await stockDataService.getStockQuote(symbol, 'NSE');
+        const quote: any = await withTimeout(stockDataService.getStockQuote(symbol, 'NSE'));
         actualPrice = quote?.lastPrice || null;
       }
 
