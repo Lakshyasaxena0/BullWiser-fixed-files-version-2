@@ -406,6 +406,19 @@ export default function CryptoPredictions() {
                     </p>
                   </div>
 
+                  {predictionResult.aiConclusion && (
+                    <div className="p-3 bg-white border border-purple-300 rounded-md" data-testid="card-ai-conclusion">
+                      <p className="text-sm font-semibold text-gray-800 mb-1">
+                        AI Conclusion
+                        <span className="ml-2 text-xs font-normal text-gray-500 capitalize">
+                          (stats & astrology: {predictionResult.aiConclusion.agreement}, {predictionResult.aiConclusion.weighting?.statistical}% / {predictionResult.aiConclusion.weighting?.astrological}%)
+                        </span>
+                      </p>
+                      <p className="text-sm text-gray-700">{predictionResult.aiConclusion.summary}</p>
+                      <p className="mt-2 text-xs text-gray-500">AI-generated analysis for information only — not financial advice.</p>
+                    </div>
+                  )}
+
                   <div className="flex space-x-2">
                     <Button 
                       onClick={handleAddToWatchlist}
