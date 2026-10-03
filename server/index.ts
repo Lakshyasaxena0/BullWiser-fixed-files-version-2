@@ -135,7 +135,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   // 
   // Previous schedule: '0 0 * * *' (once daily at midnight)
   // ─────────────────────────────────────────────────────────────────────────────
+  let monitoringRunning = false; // never let two runs overlap if one is slow
   cron.schedule('0 */2 * * *', async () => {
+    if (monitoringRunning) { log('⏭️ [Cron] Previous monitoring run still going — skipping this one'); return; }
+    monitoringRunning = true;
     const now = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true });
     log(`🔄 [Cron] Starting prediction monitoring at ${now}...`);
     try {
@@ -144,6 +147,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     } catch (error) {
       log('❌ [Cron] Prediction monitoring failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
       console.error('[Cron] Full error:', error);
+    } finally {
+      monitoringRunning = false;
     }
   });
 
