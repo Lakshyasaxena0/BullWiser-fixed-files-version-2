@@ -1,442 +1,275 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// learningService.ts
+// Real learning from prediction outcomes.
+//
+//  1. When a prediction is made, a SNAPSHOT is stored in predictions.ai_learning (JSON):
+//     what the statistics said, what the astrology said, what the final answer was,
+//     the confidence, and the weights that were used.
+//  2. When the cron job scores that prediction against the real price, the OUTCOME is added
+//     to the same JSON: was the final call right? was statistics right? was astrology right?
+//  3. Before the next prediction, getProfile() turns all scored outcomes (from ALL users)
+//     into a track record: how reliable statistics vs astrology have been for this stock,
+//     its sector and the whole market. From that it derives
+//        • the weights for statistics vs astrology,
+//        • a confidence correction (are our "70%" calls really right 70% of the time?),
+//        • a plain-language track record that is shown to the AI conclusion step.
+//
+//  No schema change: it uses the existing ai_learning / actual_price / deviation columns.
+//  Small samples are shrunk towards 50/50, so a few lucky/unlucky results can't swing things.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { db } from './db';
-import { feedback, predictions } from '@shared/schema';
-import { eq, and, gte, lte, sql } from 'drizzle-orm';
+import { predictions } from '@shared/schema';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 
-interface FeedbackMetrics {
-  stockSymbol: string;
-  averageAccuracy: number;
-  totalFeedbacks: number;
-  bullishAccuracy: number;
-  bearishAccuracy: number;
-  neutralAccuracy: number;
-  astroAccuracy: number;
-  aiAccuracy: number;
-  timeOfDayPerformance: Record<string, number>;
-  bestPerformingFactors: string[];
+export type Dir = 'bullish' | 'bearish' | 'neutral';
+export type Market = 'stock' | 'crypto';
+
+export interface LearningSnapshot {
+  v: 1;
+  market: Market;
+  symbol: string;
+  sector: string;
+  finalDirection: Dir;
+  statsDirection: Dir | null;      // null = statistics were not available
+  astroDirection: Dir | null;      // null = astrology was not available
+  confidence: number;
+  weights: { statistical: number; astrological: number }; // percentages that were used
+  learnedFrom: number;             // number of past outcomes behind those weights
+  aiUsed: boolean;
+  outcome?: {
+    actualPrice: number;
+    changePct: number;
+    actualDirection: Dir;
+    finalCorrect: boolean;
+    statsCorrect: boolean | null;
+    astroCorrect: boolean | null;
+    scoredAt: string;
+  };
 }
 
-export interface LearningAdjustment {
-  confidenceAdjustment: number;
-  directionBias: 'bullish' | 'bearish' | 'neutral' | null;
-  strengthMultiplier: number;
-  suggestedFactors: string[];
+export interface SourceReliability { symbol: number | null; sector: number | null; global: number | null; blended: number }
+
+export interface LearningProfile {
+  hasData: boolean;                                   // enough outcomes to trust the weights
+  samples: { symbol: number; sector: number; global: number };
+  weights: { statistical: number; astrological: number }; // 0-100, sum 100
+  reliability: { statistics: number; astrology: number; final: number }; // 0-100 blended hit-rates
+  confidenceAdjustment: number;                       // add to the confidence
+  directionAccuracy: Partial<Record<Dir, number>>;    // final-call hit-rate per direction (0-100)
+  summary: string;                                    // plain language, for the AI prompt / UI
 }
 
-export const NEUTRAL_LEARNING_ADJUSTMENT: LearningAdjustment = {
+const DEFAULT_PROFILE: LearningProfile = {
+  hasData: false,
+  samples: { symbol: 0, sector: 0, global: 0 },
+  weights: { statistical: 50, astrological: 50 },
+  reliability: { statistics: 50, astrology: 50, final: 50 },
   confidenceAdjustment: 0,
-  directionBias: null,
-  strengthMultiplier: 1.0,
-  suggestedFactors: [],
+  directionAccuracy: {},
+  summary: 'No scored prediction history yet — using an even 50/50 weighting.',
 };
 
-export class FeedbackLearningService {
-  // Store user feedback and actual outcomes
-  async recordFeedback(
-    userId: string,
-    predictionId: number,
-    actualPrice: number,
-    actualDirection: 'up' | 'down' | 'neutral',
-    wasUseful: boolean,
-    notes?: string
-  ): Promise<void> {
-    try {
-      // Get the original prediction
-      const [originalPrediction] = await db
-        .select()
-        .from(predictions)
-        .where(eq(predictions.id, predictionId));
+const MIN_OUTCOMES_TO_TRUST = 5;   // market-wide scored outcomes needed before weights move
+const HALF_LIFE_DAYS = 60;         // older outcomes count less
+const CACHE_MS = 5 * 60_000;
+const MAX_RECORDS = 1500;
 
-      if (!originalPrediction) {
-        throw new Error('Prediction not found');
-      }
+export interface Rec { snap: LearningSnapshot; w: number; sector: string; symbol: string; market: Market }
 
-      // Calculate accuracy
-      const predictedMid = (originalPrediction.predLow + originalPrediction.predHigh) / 2;
-      const actualChange = ((actualPrice - originalPrediction.currentPrice) / originalPrediction.currentPrice) * 100;
-      const predictedChange = ((predictedMid - originalPrediction.currentPrice) / originalPrediction.currentPrice) * 100;
-      
-      const accuracy = 100 - Math.abs(actualChange - predictedChange);
-      const directionCorrect = 
-        (actualDirection === 'up' && predictedMid > originalPrediction.currentPrice) ||
-        (actualDirection === 'down' && predictedMid < originalPrediction.currentPrice) ||
-        (actualDirection === 'neutral' && Math.abs(predictedChange) < 1);
+let cache: { at: number; recs: Rec[] } | null = null;
 
-      // Store feedback
-      await db.insert(feedback).values({
-        userId,
-        stock: originalPrediction.stock,
-        requestedTime: originalPrediction.createdAt?.toISOString() || new Date().toISOString(),
-        actualPrice,
-        useful: wasUseful ? 1 : 0,
-        submittedAt: Math.floor(Date.now() / 1000),
-        // Store additional metrics in a JSON column if needed
-      });
+function isDir(x: any): x is Dir { return x === 'bullish' || x === 'bearish' || x === 'neutral'; }
 
-      console.log(`Feedback recorded: Stock ${originalPrediction.stock}, Accuracy: ${accuracy.toFixed(2)}%, Direction Correct: ${directionCorrect}`);
-    } catch (error) {
-      console.error('Error recording feedback:', error);
-    }
+export function parseSnapshot(raw: unknown): LearningSnapshot | null {
+  if (typeof raw !== 'string' || raw[0] !== '{') return null;
+  try {
+    const s = JSON.parse(raw);
+    if (s?.v !== 1 || !isDir(s.finalDirection)) return null;
+    return s as LearningSnapshot;
+  } catch { return null; }
+}
+
+/** Build the snapshot stored with a new prediction. */
+export function buildSnapshot(args: {
+  market: Market; symbol: string; sector: string;
+  finalDirection: Dir; statsDirection: Dir | null; astroDirection: Dir | null;
+  confidence: number; weights: { statistical: number; astrological: number };
+  learnedFrom: number; aiUsed: boolean;
+}): string {
+  const snap: LearningSnapshot = { v: 1, ...args, confidence: Math.round(args.confidence) };
+  return JSON.stringify(snap);
+}
+
+/** Direction resolution used when statistics and astrology disagree: the side that has earned
+ *  more trust (weight × confidence) wins; a near-tie is neutral. */
+export function resolveDirection(
+  statsDir: Dir, astroDir: Dir,
+  wStats: number, wAstro: number, statsConf: number, astroConf: number
+): Dir {
+  if (statsDir === astroDir) return statsDir;
+  if (statsDir === 'neutral') return astroDir;
+  if (astroDir === 'neutral') return statsDir;
+  const s = wStats * statsConf;
+  const a = wAstro * astroConf;
+  if (Math.abs(s - a) < 4) return 'neutral';
+  return s > a ? statsDir : astroDir;
+}
+
+// ── Outcome scoring (called by the cron job) ─────────────────────────────────
+export function scoreOutcome(pred: any, actualPrice: number): { aiLearning: string | null; finalCorrect: boolean | null; deviation: number } {
+  const cur = Number(pred.currentPrice);
+  const mid = (Number(pred.predLow) + Number(pred.predHigh)) / 2;
+  const deviation = Math.round((actualPrice - mid) * 100) / 100;
+  const snap = parseSnapshot(pred.aiLearning);
+  if (!snap || !(cur > 0)) return { aiLearning: null, finalCorrect: null, deviation };
+
+  const changePct = ((actualPrice - cur) / cur) * 100;
+  const halfRangePct = ((Number(pred.predHigh) - Number(pred.predLow)) / 2 / cur) * 100;
+  const band = Math.max(0.3, 0.25 * halfRangePct);           // "flat" zone around the entry price
+  const actualDirection: Dir = changePct > band ? 'bullish' : changePct < -band ? 'bearish' : 'neutral';
+
+  const hit = (d: Dir | null) => (d === null ? null : d === actualDirection);
+  const finalCorrect = snap.finalDirection === actualDirection;
+  snap.outcome = {
+    actualPrice,
+    changePct: Math.round(changePct * 100) / 100,
+    actualDirection,
+    finalCorrect,
+    statsCorrect: hit(snap.statsDirection),
+    astroCorrect: hit(snap.astroDirection),
+    scoredAt: new Date().toISOString(),
+  };
+  return { aiLearning: JSON.stringify(snap), finalCorrect, deviation };
+}
+
+// ── Track record ─────────────────────────────────────────────────────────────
+async function loadRecords(): Promise<Rec[]> {
+  if (cache && Date.now() - cache.at < CACHE_MS) return cache.recs;
+  const rows = await db
+    .select({ aiLearning: predictions.aiLearning, createdAt: predictions.createdAt })
+    .from(predictions)
+    .where(and(eq(predictions.isActive, false), isNotNull(predictions.aiLearning), isNotNull(predictions.actualPrice)))
+    .orderBy(desc(predictions.createdAt))
+    .limit(MAX_RECORDS);
+
+  const now = Date.now();
+  const recs: Rec[] = [];
+  for (const r of rows) {
+    const snap = parseSnapshot(r.aiLearning);
+    if (!snap?.outcome) continue;
+    const t = snap.outcome.scoredAt ? Date.parse(snap.outcome.scoredAt) : (r.createdAt?.getTime() ?? now);
+    const ageDays = Math.max(0, (now - t) / 86_400_000);
+    recs.push({ snap, w: Math.pow(0.5, ageDays / HALF_LIFE_DAYS), sector: snap.sector, symbol: snap.symbol, market: snap.market });
   }
+  cache = { at: now, recs };
+  return recs;
+}
 
-  // Analyze feedback to get learning adjustments
-  async getLearningAdjustments(
-    stockSymbol: string,
-    userId?: string
-  ): Promise<LearningAdjustment> {
-    try {
-      // Get recent feedback for this stock
-      const recentFeedback = await db
-        .select()
-        .from(feedback)
-        .where(
-          and(
-            eq(feedback.stock, stockSymbol),
-            userId ? eq(feedback.userId, userId) : undefined,
-            gte(feedback.submittedAt, Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60) // Last 30 days
-          )
-        );
+export function invalidateLearningCache() { cache = null; }
 
-      if (recentFeedback.length === 0) {
-        return {
-          confidenceAdjustment: 0,
-          directionBias: null,
-          strengthMultiplier: 1.0,
-          suggestedFactors: []
-        };
-      }
+interface Agg { n: number; statsN: number; astroN: number; sHit: number; aHit: number; fHit: number; fN: number; confSum: number; hitSum: number; wSum: number }
+const emptyAgg = (): Agg => ({ n: 0, statsN: 0, astroN: 0, sHit: 0, aHit: 0, fHit: 0, fN: 0, confSum: 0, hitSum: 0, wSum: 0 });
 
-      // Analyze usefulness rate
-      const usefulCount = recentFeedback.filter(f => f.useful > 0).length;
-      const usefulnessRate = usefulCount / recentFeedback.length;
-
-      // Calculate confidence adjustment based on usefulness
-      // Check the most severe band first — a rate below 0.2 is also below 0.4, so the
-      // old order made the -20 branch unreachable.
-      let confidenceAdjustment = 0;
-      if (usefulnessRate > 0.8) {
-        confidenceAdjustment = 10; // Boost confidence
-      } else if (usefulnessRate > 0.6) {
-        confidenceAdjustment = 5;
-      } else if (usefulnessRate < 0.2) {
-        confidenceAdjustment = -20;
-      } else if (usefulnessRate < 0.4) {
-        confidenceAdjustment = -10; // Reduce confidence
-      }
-
-      // Analyze price patterns from feedback
-      const priceAccuracies = recentFeedback
-        .filter(f => f.actualPrice !== null)
-        .map(f => {
-          // This is simplified - in production you'd compare with stored prediction data
-          return f.actualPrice || 0;
-        });
-
-      // Determine if we're consistently over or under-predicting
-      let directionBias: 'bullish' | 'bearish' | 'neutral' | null = null;
-      let strengthMultiplier = 1.0;
-
-      if (priceAccuracies.length > 5) {
-        // Simplified bias detection
-        const avgActual = priceAccuracies.reduce((a, b) => a + b, 0) / priceAccuracies.length;
-        // You would compare this with predicted prices stored in the predictions table
-        
-        // Adjust strength based on historical performance
-        if (usefulnessRate > 0.7) {
-          strengthMultiplier = 1.1; // Increase prediction strength
-        } else if (usefulnessRate < 0.3) {
-          strengthMultiplier = 0.9; // Reduce prediction strength
-        }
-      }
-
-      // Suggest factors based on feedback patterns
-      const suggestedFactors: string[] = [];
-      
-      // Time-based analysis
-      const feedbackByHour = this.groupFeedbackByHour(recentFeedback);
-      const bestHours = Object.entries(feedbackByHour)
-        .filter(([_, useful]) => useful > 0.7)
-        .map(([hour]) => hour);
-
-      if (bestHours.length > 0) {
-        suggestedFactors.push(`Best prediction accuracy during hours: ${bestHours.join(', ')}`);
-      }
-
-      // Add more sophisticated analysis based on your needs
-      if (usefulnessRate > 0.8) {
-        suggestedFactors.push('Current prediction model performing well for this stock');
-      } else if (usefulnessRate < 0.4) {
-        suggestedFactors.push('Consider adjusting model parameters for this stock');
-      }
-
-      return {
-        confidenceAdjustment,
-        directionBias,
-        strengthMultiplier,
-        suggestedFactors
-      };
-    } catch (error) {
-      console.error('Error getting learning adjustments:', error);
-      return {
-        confidenceAdjustment: 0,
-        directionBias: null,
-        strengthMultiplier: 1.0,
-        suggestedFactors: []
-      };
-    }
+function aggregate(recs: Rec[]): Agg {
+  const g = emptyAgg();
+  for (const { snap, w } of recs) {
+    const o = snap.outcome!;
+    g.n++;
+    g.wSum += w;
+    g.fN += w; g.fHit += o.finalCorrect ? w : 0;
+    g.confSum += snap.confidence * w; g.hitSum += (o.finalCorrect ? 100 : 0) * w;
+    if (o.statsCorrect !== null && o.statsCorrect !== undefined) { g.statsN += w; g.sHit += o.statsCorrect ? w : 0; }
+    if (o.astroCorrect !== null && o.astroCorrect !== undefined) { g.astroN += w; g.aHit += o.astroCorrect ? w : 0; }
   }
+  return g;
+}
 
-  // Get comprehensive metrics for a stock based on feedback
-  async getStockMetrics(stockSymbol: string): Promise<FeedbackMetrics> {
-    try {
-      const allFeedback = await db
-        .select()
-        .from(feedback)
-        .where(eq(feedback.stock, stockSymbol));
+// Hit-rate with a Beta(2,2)-style prior so tiny samples stay close to 50%.
+const rate = (hit: number, n: number) => (hit + 2) / (n + 4);
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
-      const totalFeedbacks = allFeedback.length;
-      
-      if (totalFeedbacks === 0) {
-        return {
-          stockSymbol,
-          averageAccuracy: 50,
-          totalFeedbacks: 0,
-          bullishAccuracy: 50,
-          bearishAccuracy: 50,
-          neutralAccuracy: 50,
-          astroAccuracy: 50,
-          aiAccuracy: 50,
-          timeOfDayPerformance: {},
-          bestPerformingFactors: []
-        };
-      }
+/** Blend global → sector → symbol so specific evidence counts more only as it accumulates. */
+function blend(gv: number, sv: number | null, sn: number, yv: number | null, yn: number): number {
+  let v = gv;
+  if (sv !== null) v = lerp(v, sv, sn / (sn + 10));
+  if (yv !== null) v = lerp(v, yv, yn / (yn + 6));
+  return v;
+}
 
-      // Calculate average accuracy
-      const usefulFeedbacks = allFeedback.filter(f => f.useful > 0).length;
-      const averageAccuracy = (usefulFeedbacks / totalFeedbacks) * 100;
-
-      // Group by time of day
-      const timeOfDayPerformance = this.groupFeedbackByHour(allFeedback);
-
-      // Identify best performing factors
-      const bestPerformingFactors: string[] = [];
-      
-      if (averageAccuracy > 70) {
-        bestPerformingFactors.push('Overall high accuracy');
-      }
-
-      // Find best performing hours
-      const bestHour = Object.entries(timeOfDayPerformance)
-        .sort(([, a], [, b]) => b - a)[0];
-      
-      if (bestHour && bestHour[1] > 0.7) {
-        bestPerformingFactors.push(`Peak accuracy at hour ${bestHour[0]}`);
-      }
-
-      return {
-        stockSymbol,
-        averageAccuracy,
-        totalFeedbacks,
-        bullishAccuracy: this.calculateDirectionalAccuracy(allFeedback, 'bullish'),
-        bearishAccuracy: this.calculateDirectionalAccuracy(allFeedback, 'bearish'),
-        neutralAccuracy: this.calculateDirectionalAccuracy(allFeedback, 'neutral'),
-        astroAccuracy: this.calculateMethodAccuracy(allFeedback, 'astro'),
-        aiAccuracy: this.calculateMethodAccuracy(allFeedback, 'ai'),
-        timeOfDayPerformance,
-        bestPerformingFactors
-      };
-    } catch (error) {
-      console.error('Error getting stock metrics:', error);
-      return {
-        stockSymbol,
-        averageAccuracy: 50,
-        totalFeedbacks: 0,
-        bullishAccuracy: 50,
-        bearishAccuracy: 50,
-        neutralAccuracy: 50,
-        astroAccuracy: 50,
-        aiAccuracy: 50,
-        timeOfDayPerformance: {},
-        bestPerformingFactors: []
-      };
-    }
-  }
-
-  // Group feedback by hour of day
-  private groupFeedbackByHour(feedbackList: any[]): Record<string, number> {
-    const hourGroups: Record<string, { useful: number; total: number }> = {};
-    
-    feedbackList.forEach(f => {
-      const date = new Date(f.requestedTime);
-      const hour = date.getHours().toString();
-      
-      if (!hourGroups[hour]) {
-        hourGroups[hour] = { useful: 0, total: 0 };
-      }
-      
-      hourGroups[hour].total++;
-      if (f.useful > 0) {
-        hourGroups[hour].useful++;
-      }
-    });
-
-    const performance: Record<string, number> = {};
-    Object.entries(hourGroups).forEach(([hour, data]) => {
-      performance[hour] = data.total > 0 ? data.useful / data.total : 0;
-    });
-    
-    return performance;
-  }
-
-  // Calculate accuracy for specific prediction directions
-  private calculateDirectionalAccuracy(feedbackList: any[], direction: string): number {
-    // This is simplified - in production, you'd join with predictions table
-    // to get the original prediction direction
-    const relevant = feedbackList.filter(f => {
-      // Filter by direction from stored prediction
-      return true; // Placeholder
-    });
-    
-    if (relevant.length === 0) return 50;
-    
-    const accurate = relevant.filter(f => f.useful > 0).length;
-    return (accurate / relevant.length) * 100;
-  }
-
-  // Calculate accuracy for specific methods (AI vs Astro)
-  private calculateMethodAccuracy(feedbackList: any[], method: string): number {
-    // This would require storing the method used in the prediction
-    // For now, return a placeholder
-    const relevant = feedbackList.filter(f => {
-      // Filter by method from stored prediction
-      return true; // Placeholder
-    });
-    
-    if (relevant.length === 0) return 50;
-    
-    const accurate = relevant.filter(f => f.useful > 0).length;
-    return (accurate / relevant.length) * 100;
-  }
-
-  // Apply learned adjustments to a prediction
-  applyLearningToPrediction(
-    basePrediction: any,
-    learningAdjustment: LearningAdjustment
-  ): any {
-    const adjusted = { ...basePrediction };
-    
-    // Apply confidence adjustment
-    if (adjusted.confidence) {
-      adjusted.confidence = Math.max(
-        10,
-        Math.min(95, adjusted.confidence + learningAdjustment.confidenceAdjustment)
-      );
-    }
-    
-    // Apply strength multiplier to price targets
-    if (adjusted.predLow && adjusted.predHigh && learningAdjustment.strengthMultiplier !== 1.0) {
-      const currentPrice = adjusted.currentPrice || 100;
-      const lowDiff = adjusted.predLow - currentPrice;
-      const highDiff = adjusted.predHigh - currentPrice;
-      
-      adjusted.predLow = currentPrice + (lowDiff * learningAdjustment.strengthMultiplier);
-      adjusted.predHigh = currentPrice + (highDiff * learningAdjustment.strengthMultiplier);
-    }
-    
-    // Add learning insights
-    adjusted.learningInsights = {
-      feedbackAdjusted: true,
-      confidenceAdjustment: learningAdjustment.confidenceAdjustment,
-      suggestedFactors: learningAdjustment.suggestedFactors,
-      directionBias: learningAdjustment.directionBias
-    };
-    
-    return adjusted;
-  }
-
-  // Get personalized adjustments for a specific user
-  async getUserPersonalization(userId: string): Promise<{
-    preferredStocks: string[];
-    accuracyByStock: Record<string, number>;
-    bestTimeToTrade: string[];
-    personalizedConfidenceBoost: number;
-  }> {
-    try {
-      const userFeedback = await db
-        .select()
-        .from(feedback)
-        .where(eq(feedback.userId, userId));
-
-      if (userFeedback.length === 0) {
-        return {
-          preferredStocks: [],
-          accuracyByStock: {},
-          bestTimeToTrade: [],
-          personalizedConfidenceBoost: 0
-        };
-      }
-
-      // Find preferred stocks (most feedback given)
-      const stockCounts: Record<string, number> = {};
-      const stockAccuracy: Record<string, number> = {};
-      
-      userFeedback.forEach(f => {
-        if (!stockCounts[f.stock]) {
-          stockCounts[f.stock] = 0;
-          stockAccuracy[f.stock] = 0;
-        }
-        stockCounts[f.stock]++;
-        if (f.useful > 0) {
-          stockAccuracy[f.stock]++;
-        }
-      });
-
-      // Calculate accuracy percentages
-      Object.keys(stockAccuracy).forEach(stock => {
-        stockAccuracy[stock] = (stockAccuracy[stock] / stockCounts[stock]) * 100;
-      });
-
-      // Get top 5 preferred stocks
-      const preferredStocks = Object.entries(stockCounts)
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 5)
-        .map(([stock]) => stock);
-
-      // Find best time to trade
-      const timePerformance = this.groupFeedbackByHour(userFeedback);
-      const bestTimeToTrade = Object.entries(timePerformance)
-        .filter(([, accuracy]) => accuracy > 0.6)
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 3)
-        .map(([hour]) => `${hour}:00`);
-
-      // Calculate personalized confidence boost
-      const overallAccuracy = userFeedback.filter(f => f.useful > 0).length / userFeedback.length;
-      let personalizedConfidenceBoost = 0;
-      
-      if (overallAccuracy > 0.8) {
-        personalizedConfidenceBoost = 15;
-      } else if (overallAccuracy > 0.6) {
-        personalizedConfidenceBoost = 10;
-      } else if (overallAccuracy < 0.3) {
-        personalizedConfidenceBoost = -10;
-      }
-
-      return {
-        preferredStocks,
-        accuracyByStock: stockAccuracy,
-        bestTimeToTrade,
-        personalizedConfidenceBoost
-      };
-    } catch (error) {
-      console.error('Error getting user personalization:', error);
-      return {
-        preferredStocks: [],
-        accuracyByStock: {},
-        bestTimeToTrade: [],
-        personalizedConfidenceBoost: 0
-      };
-    }
+export async function getProfile(symbol: string, sector: string, market: Market): Promise<LearningProfile> {
+  try {
+    return computeProfile(await loadRecords(), symbol, sector, market);
+  } catch (err) {
+    console.error('[Learning] getProfile failed (using 50/50):', err);
+    return DEFAULT_PROFILE;
   }
 }
 
-export const feedbackLearningService = new FeedbackLearningService();
+/** Pure computation (exported for testing). */
+export function computeProfile(records: Rec[], symbol: string, sector: string, market: Market): LearningProfile {
+  {
+    const all = records.filter(r => r.market === market);
+    const sym = symbol.toUpperCase();
+    const gAgg = aggregate(all);
+    if (gAgg.n < MIN_OUTCOMES_TO_TRUST) {
+      return { ...DEFAULT_PROFILE, samples: { symbol: 0, sector: 0, global: gAgg.n },
+        summary: `Only ${gAgg.n} scored prediction${gAgg.n === 1 ? '' : 's'} so far — not enough to adjust the 50/50 weighting.` };
+    }
+    const sAgg = aggregate(all.filter(r => r.sector === sector));
+    const yAgg = aggregate(all.filter(r => r.symbol.toUpperCase() === sym));
+
+    const pick = (sel: (a: Agg) => [number, number]) => {
+      const [gh, gn] = sel(gAgg), [sh, sn] = sel(sAgg), [yh, yn] = sel(yAgg);
+      const gv = rate(gh, gn);
+      const sv = sn > 0 ? rate(sh, sn) : null;
+      const yv = yn > 0 ? rate(yh, yn) : null;
+      return { symbol: yv, sector: sv, global: gv, blended: blend(gv, sv, sn, yv, yn) } as SourceReliability;
+    };
+    const rStats = pick(a => [a.sHit, a.statsN]);
+    const rAstro = pick(a => [a.aHit, a.astroN]);
+    const rFinal = pick(a => [a.fHit, a.fN]);
+
+    // Weights: share of reliability, kept inside 25–75 so neither source is ever ignored.
+    const raw = rStats.blended / (rStats.blended + rAstro.blended);
+    const wS = Math.min(0.75, Math.max(0.25, raw));
+    const statistical = Math.round(wS * 100);
+
+    // Confidence calibration: stated confidence vs real hit-rate (market-wide → sector → symbol).
+    const gap = (a: Agg) => (a.wSum > 0 ? a.hitSum / a.wSum - a.confSum / a.wSum : 0);
+    const gapBlend = blend(gap(gAgg), sAgg.n >= 3 ? gap(sAgg) : null, sAgg.n, yAgg.n >= 3 ? gap(yAgg) : null, yAgg.n);
+    const shrink = gAgg.n / (gAgg.n + 15);
+    const confidenceAdjustment = Math.max(-15, Math.min(10, Math.round(gapBlend * shrink)));
+
+    // Per-direction hit-rate of the final call (market-wide)
+    const directionAccuracy: Partial<Record<Dir, number>> = {};
+    for (const d of ['bullish', 'bearish', 'neutral'] as Dir[]) {
+      const rs = all.filter(r => r.snap.finalDirection === d);
+      if (rs.length >= 3) directionAccuracy[d] = Math.round(100 * rs.filter(r => r.snap.outcome!.finalCorrect).length / rs.length);
+    }
+
+    const pct = (x: number) => Math.round(x * 100);
+    const lines = [
+      `Track record from ${gAgg.n} scored ${market} predictions (${sAgg.n} in ${sector}, ${yAgg.n} for ${sym}), recent results count more:`,
+      `- Statistics called the real direction correctly ${pct(rStats.blended)}% of the time; astrology ${pct(rAstro.blended)}%; the final conclusion ${pct(rFinal.blended)}%.`,
+      `- Evidence-based weighting: ${statistical}% statistics / ${100 - statistical}% astrology.`,
+      confidenceAdjustment !== 0
+        ? `- Past confidence was ${confidenceAdjustment < 0 ? 'too high' : 'too low'}: adjust by ${confidenceAdjustment > 0 ? '+' : ''}${confidenceAdjustment}.`
+        : '- Past confidence has been well calibrated.',
+      ...(Object.keys(directionAccuracy).length
+        ? [`- Final-call hit-rate by direction: ${Object.entries(directionAccuracy).map(([d, v]) => `${d} ${v}%`).join(', ')}.`] : []),
+    ];
+
+    return {
+      hasData: true,
+      samples: { symbol: yAgg.n, sector: sAgg.n, global: gAgg.n },
+      weights: { statistical, astrological: 100 - statistical },
+      reliability: { statistics: pct(rStats.blended), astrology: pct(rAstro.blended), final: pct(rFinal.blended) },
+      confidenceAdjustment,
+      directionAccuracy,
+      summary: lines.join('\n'),
+    };
+  }
+}
+
+export const learningService = { getProfile, scoreOutcome, buildSnapshot, resolveDirection, invalidateLearningCache };
