@@ -406,6 +406,37 @@ export default function PredictionForm() {
               </div>
             </div>
 
+            {/* AI Conclusion — the AI's final verdict after studying the statistical AND astrological analyses */}
+            {predictionResult.aiConclusion && (
+              <div className="mt-4 p-4 bg-white border border-purple-300 rounded-lg" data-testid="card-ai-conclusion">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2">
+                    <Brain className="h-4 w-4 text-purple-600" />
+                    <h4 className="text-sm font-semibold text-gray-800">AI Conclusion</h4>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-xs capitalize">
+                      Stats & astrology: {predictionResult.aiConclusion.agreement}
+                    </Badge>
+                    <Badge variant="outline" className="text-xs">
+                      {predictionResult.aiConclusion.weighting?.statistical}% stats / {predictionResult.aiConclusion.weighting?.astrological}% astrology
+                    </Badge>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-700" data-testid="text-ai-conclusion">{predictionResult.aiConclusion.summary}</p>
+                {predictionResult.aiConclusion.keyDrivers?.length > 0 && (
+                  <ul className="mt-2 list-disc list-inside text-sm text-gray-600 space-y-1">
+                    {predictionResult.aiConclusion.keyDrivers.map((d: string, idx: number) => (
+                      <li key={idx}>{d}</li>
+                    ))}
+                  </ul>
+                )}
+                <p className="mt-2 text-xs text-gray-500">
+                  AI-generated analysis for information only — not financial advice.
+                </p>
+              </div>
+            )}
+
             {/* AI Analysis Details (only shown when AI-powered) */}
             {predictionResult.aiPowered && predictionResult.reasoning && (
               <div className="mt-4 p-4 bg-purple-50 border border-purple-200 rounded-lg">
