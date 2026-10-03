@@ -9,25 +9,13 @@ import path from 'path';
 
 // ── NOTE: pythonAstrologyBridge import removed — was imported but never used ──
 
-// Uses Groq (llama-3.3-70b) via OpenAI-compatible SDK
-// The env var OPENAI_API_KEY on Render holds the Groq key
-import OpenAI from 'openai';
-const groq = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || '',
-  baseURL: 'https://api.groq.com/openai/v1',
-});
+// Uses Groq (llama-3.3-70b) through the shared groqClient (Groq_API_key / GROQ_API_KEY)
+import { groqJSON } from './groqClient';
 
 async function geminiJSON(systemPrompt: string, userPrompt: string): Promise<any> {
-  const response = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
-    messages: [
-      { role: 'system', content: systemPrompt + '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code fences.' },
-      { role: 'user',   content: userPrompt },
-    ],
-    response_format: { type: 'json_object' },
-    temperature: 0.3,
-  });
-  return JSON.parse(response.choices[0].message.content || '{}');
+  const result = await groqJSON(systemPrompt, userPrompt, 1500);
+  if (!result) throw new Error('Groq unavailable');
+  return result;
 }
 
 interface ChartAnalysis {
