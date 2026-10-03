@@ -6,6 +6,20 @@
 import { db } from "./db";
 import { predictions, feedback } from "@shared/schema";
 import { eq, desc, and, isNotNull } from "drizzle-orm";
+import { parseSnapshot } from "./learningService";
+
+// ai_learning holds a JSON learning snapshot for new predictions (and free text for old ones).
+// Turn the snapshot into a readable sentence for the analytics page.
+function describeLearning(raw: string | null): string | null {
+  if (!raw) return null;
+  const snap = parseSnapshot(raw);
+  if (!snap) return raw;
+  const base = `Final call: ${snap.finalDirection} (${snap.confidence}% confidence). Statistics said ${snap.statsDirection ?? "n/a"}, astrology said ${snap.astroDirection ?? "n/a"}. Weighting used: ${snap.weights.statistical}% statistics / ${snap.weights.astrological}% astrology.`;
+  const o = snap.outcome;
+  if (!o) return `${base} Waiting to be scored against the real price.`;
+  const ok = (b: boolean | null) => (b === null ? "n/a" : b ? "right" : "wrong");
+  return `${base} Actual move: ${o.changePct}% (${o.actualDirection}). Final call ${ok(o.finalCorrect)}; statistics ${ok(o.statsCorrect)}; astrology ${ok(o.astroCorrect)}.`;
+}
 
 interface PredictionAnalytics {
   id: number;
@@ -153,7 +167,7 @@ export class PredictionHistoryService {
           astroReasoning: pred.astroReasoning || null,
           planetaryData: pred.planetaryData || null,
           
-          aiLearning: pred.aiLearning || null,
+          aiLearning: describeLearning(pred.aiLearning as string | null),
           feedbackUseful: matchedFeedback ? matchedFeedback.useful === 1 : null,
           
           mode: pred.mode,
