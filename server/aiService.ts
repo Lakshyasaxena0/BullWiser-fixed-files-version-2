@@ -6,6 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { groqJSON } from './groqClient';
+import { learningService, type LearningProfile } from './learningService';
 import { stockDataService }          from './stockDataService';
 import { feedbackLearningService, NEUTRAL_LEARNING_ADJUSTMENT } from './feedbackLearningService';
 import { astrologyService }          from './astrologyService';
@@ -88,6 +89,8 @@ interface SynthesisInput {
   } | null;
   /** What the fixed formula would have concluded — the safe fallback and a sanity anchor. */
   formula: { direction: Direction; confidence: number };
+  /** Track record learned from past scored predictions (weights + hit-rates). */
+  learned?: LearningProfile;
 }
 
 export interface AIConclusion {
@@ -129,7 +132,8 @@ You receive two independent analyses of the same asset:
 Study BOTH, decide how much weight each deserves, say where they agree or conflict, and give one clear, balanced conclusion.
 Rules:
 - Use only the data provided. Never invent prices, news or indicators.
-- Start from 50% statistical / 50% astrological. Shift the weighting only if one side is neutral, missing or clearly stronger, and reflect that in the weighting numbers.
+- The LEARNED TRACK RECORD below says how reliable each source has actually been on past, scored predictions. Use its weighting as your starting point (stay within ~10 points of it). With no track record, start from 50/50. Shift further only if one side is neutral or missing, and reflect that in the weighting numbers.
+- If a source has a poor track record, say so and lean on the other one.
 - If the two sides disagree, say so plainly and lower confidence instead of hiding the conflict.
 - Use hedged language ("suggests", "leans"). Never promise returns. This is analysis, not financial advice.
 - "direction" must be exactly one of: bullish, bearish, neutral.
@@ -145,7 +149,10 @@ ${JSON.stringify(input.stats ?? 'not available (not enough price history)')}
 ASTROLOGICAL ANALYSIS:
 ${JSON.stringify(input.astro ?? 'not available')}
 
-FIXED-FORMULA RESULT (50/50 blend with adjustments): ${input.formula.direction}, confidence ${input.formula.confidence}
+LEARNED TRACK RECORD (from real, scored past predictions):
+${input.learned?.summary ?? 'None yet.'}
+
+FORMULA RESULT (uses the learned weighting, plus adjustments): ${input.formula.direction}, confidence ${input.formula.confidence}
 
 Return JSON:
 {
@@ -186,7 +193,13 @@ Return JSON:
     let wStat = Number(raw.weighting?.statistical);
     let wAstro = Number(raw.weighting?.astrological);
     if (!isFinite(wStat) || !isFinite(wAstro) || wStat < 0 || wAstro < 0 || wStat + wAstro === 0) { wStat = 50; wAstro = 50; }
-    const total = wStat + wAstro;
+    let total = wStat + wAstro;
+    // Evidence beats opinion: when there is a real track record, the AI may only nudge the learned weighting by 10 points.
+    if (input.learned?.hasData) {
+      const base = input.learned.weights.statistical;
+      const statPct = Math.min(base + 10, Math.max(base - 10, (wStat / total) * 100));
+      wStat = statPct; wAstro = 100 - statPct; total = 100;
+    }
 
     return {
       direction,
@@ -214,9 +227,15 @@ Return JSON:
     const sector = getSector(symbol);
 
     // ── Step 1: Feedback learning ─────────────────────────────────────────
-    const learningAdjustment = await feedbackLearningService
+    let learningAdjustment = await feedbackLearningService
       .getLearningAdjustments(symbol, userId || '')
       .catch(() => ({ ...NEUTRAL_LEARNING_ADJUSTMENT }));
+
+    // Learned track record (all users, all scored outcomes): decides the statistics-vs-astrology
+    // weighting and corrects over/under-confidence.
+    const profile = await learningService.getProfile(symbol, sector, 'stock');
+    if (profile.hasData) learningAdjustment = { ...learningAdjustment, confidenceAdjustment: profile.confidenceAdjustment };
+    console.log(`[Learning] ${symbol}: weights ${profile.weights.statistical}/${profile.weights.astrological}, outcomes=${profile.samples.global}, confAdj=${profile.confidenceAdjustment}`);
 
     // ── Step 2: Statistical analysis (50% weight) ─────────────────────────
     let statsResult: StatisticalAnalysisResult | null = null;
@@ -274,7 +293,7 @@ Return JSON:
     const combined = this.combineStatsAndAstro(
       statsResult, astroPrediction, advancedAstroResult,
       aiStatsAnalysis, yogaBonus, transitImpact,
-      currentPrice, sector, learningAdjustment
+      currentPrice, sector, learningAdjustment, profile.weights
     );
 
     // ── Step 7: Feedback learning ─────────────────────────────────────────
@@ -352,6 +371,7 @@ Return JSON:
         direction:  finalPrediction.finalDirection as Direction,
         confidence: finalPrediction.combinedConfidence,
       },
+      learned: profile,
     }).catch((err) => { console.error('[AI] Synthesis error (non-fatal):', err); return null; });
 
     if (aiConclusion) {
@@ -369,6 +389,18 @@ Return JSON:
       console.log(`[AI] Conclusion for ${symbol}: ${aiConclusion.direction} @ ${aiConclusion.confidence}% (${aiConclusion.agreement}; formula said ${aiConclusion.formula.direction} @ ${aiConclusion.formula.confidence}%)`);
     }
 
+    // ── Step 8c: remember what each source said, so the cron can score them later ──
+    const usedWeights = aiConclusion?.weighting ?? profile.weights;
+    finalPrediction.learningProfile = { hasData: profile.hasData, outcomes: profile.samples.global, weights: usedWeights, reliability: profile.reliability };
+    finalPrediction.learningSnapshot = learningService.buildSnapshot({
+      market: 'stock', symbol, sector,
+      finalDirection: finalPrediction.finalDirection,
+      statsDirection: statsResult ? ((aiStatsAnalysis?.direction ?? statsResult.statisticalSignal) as Direction) : null,
+      astroDirection: astroPrediction ? (astroPrediction.direction as Direction) : null,
+      confidence: finalPrediction.combinedConfidence,
+      weights: usedWeights, learnedFrom: profile.samples.global, aiUsed: aiConclusion !== null,
+    });
+
     // ── Step 9: Metadata ─────────────────────────────────────────────────
     finalPrediction.metadata = {
       aiEnabled:            aiStatsAnalysis !== null || aiConclusion !== null,
@@ -380,8 +412,10 @@ Return JSON:
       predictionTime:       new Date().toISOString(),
       sector,
       weighting: {
-        statistical: '50%',
-        astrological: '50%',
+        statistical: `${usedWeights.statistical}%`,
+        astrological: `${usedWeights.astrological}%`,
+        learned: profile.hasData,
+        basedOnOutcomes: profile.samples.global,
       },
       sources: {
         statistics:  statsResult ? `${statsResult.analysedBars} bars of OHLCV data (RSI, MACD, BB, MA, Volume, ADX)` : 'No historical data available',
@@ -389,7 +423,7 @@ Return JSON:
         advanced:    advancedAstroResult ? `D-10 Dashamsa + ${sector} Sector + Transits + Yogas` : 'Not available',
         ai:          aiConclusion ? 'AI conclusion from statistical + astrological analysis (Groq llama-3.3-70b)'
                    : aiStatsAnalysis ? 'AI statistical interpretation (Groq llama-3.3-70b)' : 'Not available',
-        feedback:    learningAdjustment.suggestedFactors?.length > 0 ? 'Active feedback learning' : 'No feedback data yet',
+        feedback:    profile.hasData ? `Learned from ${profile.samples.global} scored predictions` : 'No scored predictions yet',
       },
     };
 
@@ -467,8 +501,11 @@ Return JSON:
     transitImpact:      number,
     currentPrice:       number,
     sector:             string,
-    learningAdjustment: any
+    learningAdjustment: any,
+    weights:            { statistical: number; astrological: number } = { statistical: 50, astrological: 50 }
   ): any {
+    const wS = weights.statistical / 100;
+    const wA = weights.astrological / 100;
 
     // ── Statistical side ─────────────────────────────────────────────────
     const statsScore      = statsResult?.statisticalScore       ?? 50;
@@ -508,17 +545,15 @@ Return JSON:
     } else if (astroDir === 'neutral') {
       finalDirection = statsDir;
     } else {
-      // Direct conflict: stats wins for short-term, astro wins for longer-term
-      // For now, take the statistically stronger signal
-      finalDirection = statsScore > 50 && statsDir === 'bullish' ? 'bullish'
-        : statsScore < 50 && statsDir === 'bearish' ? 'bearish'
-        : 'neutral';
+      // Direct conflict: the source that has earned more trust (learned weight × confidence) wins;
+      // a near-tie is neutral.
+      finalDirection = learningService.resolveDirection(statsDir, astroDir, wS, wA, statsConfidence, astroConfidence);
     }
 
     // ── Confidence calculation (50-50 weighted) ───────────────────────────
     let combinedConfidence = Math.round(
-      statsConfidence  * 0.50 +
-      astroConfidence  * 0.50 +
+      statsConfidence  * wS +
+      astroConfidence  * wA +
       astroSectorBoost +
       yogaBonus       +
       transitImpact   +
@@ -541,8 +576,8 @@ Return JSON:
     const astroHigh = currentPrice * (1 + riskMultiplier);
 
     // 50-50 blend of stats and astro price targets
-    const blendedLow  = Math.round(((statsLow  * 0.5) + (astroLow  * 0.5)) * 100) / 100;
-    const blendedHigh = Math.round(((statsHigh * 0.5) + (astroHigh * 0.5)) * 100) / 100;
+    const blendedLow  = Math.round(((statsLow  * wS) + (astroLow  * wA)) * 100) / 100;
+    const blendedHigh = Math.round(((statsHigh * wS) + (astroHigh * wA)) * 100) / 100;
 
     // ── ★ SEPARATE Statistical and Astrological factors ───────────────────
     // STATISTICAL FACTORS (pure technical analysis - NO astro)
@@ -618,8 +653,8 @@ Return JSON:
 
       // Weighting
       weighting: {
-        statistical:  50,
-        astrological: 50,
+        statistical:  weights.statistical,
+        astrological: weights.astrological,
         directionAgreement,
         conflictResolution: !directionAgreement && statsDir !== 'neutral' && astroDir !== 'neutral'
           ? `Stats(${statsDir}) vs Astro(${astroDir}) — resolved to ${finalDirection}`
@@ -673,6 +708,10 @@ Return JSON:
 
     const astroAnalysis = await astrologyService.getCurrentAstrology(targetDate);
     const userPers      = await feedbackLearningService.getUserPersonalization(userId).catch(() => null);
+    const profile       = await learningService.getProfile(cryptoSymbol, 'Crypto', 'crypto');
+    const wS = profile.weights.statistical / 100;
+    const wA = profile.weights.astrological / 100;
+    console.log(`[Learning] ${cryptoSymbol}: weights ${profile.weights.statistical}/${profile.weights.astrological}, outcomes=${profile.samples.global}, confAdj=${profile.confidenceAdjustment}`);
 
     // AI interprets crypto stats
     let aiStatsAnalysis: any = null;
@@ -691,9 +730,11 @@ Return JSON:
     const statsConf  = aiStatsAnalysis?.confidence ?? statsResult?.statisticalConfidence ?? 50;
 
     let finalDir: 'bullish' | 'bearish' | 'neutral' =
-      statsDir === astroDir ? statsDir : statsDir !== 'neutral' ? statsDir : astroDir;
+      learningService.resolveDirection(statsDir, astroDir, wS, wA, statsConf, astroStrength);
 
-    const combinedConf0 = Math.min(80, Math.round((statsConf * 0.5 + astroStrength * 0.5)));
+    const combinedConf0 = Math.min(80, Math.max(30, Math.round(
+      statsConf * wS + astroStrength * wA + (profile.hasData ? profile.confidenceAdjustment : 0)
+    )));
     let combinedConf = combinedConf0;
 
     const statsLow  = aiStatsAnalysis?.priceTarget?.low  ?? currentPrice * 0.92;
@@ -701,8 +742,8 @@ Return JSON:
     const astroLow  = currentPrice * (1 - 0.06);
     const astroHigh = currentPrice * (1 + 0.06);
 
-    const blendedLow  = Math.round(((statsLow  * 0.5) + (astroLow  * 0.5)) * 100) / 100;
-    const blendedHigh = Math.round(((statsHigh * 0.5) + (astroHigh * 0.5)) * 100) / 100;
+    const blendedLow  = Math.round(((statsLow  * wS) + (astroLow  * wA)) * 100) / 100;
+    const blendedHigh = Math.round(((statsHigh * wS) + (astroHigh * wA)) * 100) / 100;
 
     const techFactors = [
       ...(aiStatsAnalysis?.technicalFactors ?? statsResult?.keyFindings ?? []).slice(0, 3),
@@ -755,6 +796,7 @@ Return JSON:
         },
       },
       formula: { direction: finalDir, confidence: combinedConf0 },
+      learned: profile,
     }).catch((err) => { console.error('[AI] Crypto synthesis error (non-fatal):', err); return null; });
 
     if (aiConclusion) {
@@ -763,7 +805,19 @@ Return JSON:
       console.log(`[AI] Conclusion for ${cryptoSymbol}: ${aiConclusion.direction} @ ${aiConclusion.confidence}% (${aiConclusion.agreement}; formula said ${aiConclusion.formula.direction} @ ${aiConclusion.formula.confidence}%)`);
     }
 
+    const usedWeights = aiConclusion?.weighting ?? profile.weights;
+    const learningSnapshot = learningService.buildSnapshot({
+      market: 'crypto', symbol: cryptoSymbol, sector: 'Crypto',
+      finalDirection: finalDir,
+      statsDirection: statsResult ? (statsDir as Direction) : null,
+      astroDirection: astroDir,
+      confidence: combinedConf,
+      weights: usedWeights, learnedFrom: profile.samples.global, aiUsed: aiConclusion !== null,
+    });
+
     return {
+      learningSnapshot,
+      learningProfile: { hasData: profile.hasData, outcomes: profile.samples.global, weights: usedWeights, reliability: profile.reliability },
       prediction: { direction: finalDir, priceTarget: { low: blendedLow, high: blendedHigh } },
       combinedConfidence: combinedConf,
       confidence:         combinedConf,
@@ -788,7 +842,7 @@ Return JSON:
         aiEnabled:    aiStatsAnalysis !== null || aiConclusion !== null,
         aiSynthesisEnabled: aiConclusion !== null,
         statsEnabled: statsResult !== null,
-        weighting:    { statistical: '50%', astrological: '50%' },
+        weighting:    { statistical: `${usedWeights.statistical}%`, astrological: `${usedWeights.astrological}%`, learned: profile.hasData, basedOnOutcomes: profile.samples.global },
         sources: {
           statistics: statsResult ? `${statsResult.analysedBars} bars` : 'No historical data',
           astrology:  'Vedic astrology',

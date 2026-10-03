@@ -413,6 +413,11 @@ export default function CryptoPredictions() {
                         <span className="ml-2 text-xs font-normal text-gray-500 capitalize">
                           (stats & astrology: {predictionResult.aiConclusion.agreement}, {predictionResult.aiConclusion.weighting?.statistical}% / {predictionResult.aiConclusion.weighting?.astrological}%)
                         </span>
+                        <span className="ml-2 text-xs font-normal text-gray-400">
+                          {predictionResult.learning?.hasData
+                            ? `· weights learned from ${predictionResult.learning.outcomes} past outcomes`
+                            : '· not enough past outcomes to learn weights yet'}
+                        </span>
                       </p>
                       <p className="text-sm text-gray-700">{predictionResult.aiConclusion.summary}</p>
                       <p className="mt-2 text-xs text-gray-500">AI-generated analysis for information only — not financial advice.</p>

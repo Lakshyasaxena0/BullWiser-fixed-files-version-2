@@ -421,6 +421,11 @@ export default function PredictionForm() {
                     <Badge variant="outline" className="text-xs">
                       {predictionResult.aiConclusion.weighting?.statistical}% stats / {predictionResult.aiConclusion.weighting?.astrological}% astrology
                     </Badge>
+                    <Badge variant="outline" className="text-xs" data-testid="badge-learning">
+                      {predictionResult.learning?.hasData
+                        ? `Weights learned from ${predictionResult.learning.outcomes} past outcomes`
+                        : 'Learning: not enough past outcomes yet'}
+                    </Badge>
                   </div>
                 </div>
                 <p className="text-sm text-gray-700" data-testid="text-ai-conclusion">{predictionResult.aiConclusion.summary}</p>

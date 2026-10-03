@@ -15,6 +15,7 @@ import { eq, and, lte, gte, sql } from "drizzle-orm";
 import { stockDataService } from "./stockDataService";
 import { cryptoDataService } from "./cryptoDataService";
 import { aiAstrologyTrainer } from "./aiAstrologyTrainer";
+import { learningService, getProfile, parseSnapshot } from "./learningService";
 
 interface PredictionResult {
   predictionId: number;
@@ -58,9 +59,15 @@ export class PredictionMonitoringService {
         await this.checkPredictionAccuracy(pred);
       }
 
-      // Only retrain when there is something new to learn from
+      // Learn from what was just scored. The learned track record (statistics vs astrology
+      // reliability, confidence calibration) is rebuilt from the scored outcomes and is used by the
+      // very next prediction. (The old per-case Groq "retraining" saved nothing that predictions
+      // ever read, and burned API quota, so it is no longer run from the cron job.)
       if (duePredictions.length > 0) {
-        await this.triggerAIRetrain();
+        learningService.invalidateLearningCache();
+        const p = await getProfile('*', 'General', 'stock');
+        const c = await getProfile('*', 'Crypto', 'crypto');
+        console.log(`[Monitor] Learned weights — stocks: ${p.weights.statistical}/${p.weights.astrological} (${p.samples.global} outcomes), crypto: ${c.weights.statistical}/${c.weights.astrological} (${c.samples.global} outcomes)`);
       }
 
     } catch (error) {
@@ -129,21 +136,35 @@ export class PredictionMonitoringService {
 
       const outcome = accuracy >= 70 ? 'correct' : 'incorrect';
 
-      // Store feedback automatically
+      // Score the direction call and each source (statistics / astrology) against reality.
+      // This is what the learning service reads to set the weights for future predictions.
+      const scored = learningService.scoreOutcome(prediction, actualPrice);
+      const useful = scored.finalCorrect !== null ? (scored.finalCorrect ? 1 : 0) : (accuracy >= 70 ? 1 : 0);
+
       await db.insert(feedback).values({
         userId: prediction.userId,
         stock: prediction.stock,
         requestedTime: prediction.targetDate.toISOString(),
         actualPrice,
-        useful: accuracy >= 70 ? 1 : 0,
+        useful,
         submittedAt: Math.floor(Date.now() / 1000),
       });
 
-      // Mark prediction as inactive
+      // Mark prediction as scored (inactive) and store the outcome
       await db
         .update(predictions)
-        .set({ isActive: false })
+        .set({
+          isActive: false,
+          actualPrice,
+          deviation: scored.deviation,
+          ...(scored.aiLearning ? { aiLearning: scored.aiLearning } : {}),
+        })
         .where(eq(predictions.id, prediction.id));
+
+      const snap = parseSnapshot(scored.aiLearning);
+      if (snap?.outcome) {
+        console.log(`[Monitor] ${symbol}: final ${snap.finalDirection} vs actual ${snap.outcome.actualDirection} (${snap.outcome.changePct}%) — stats ${snap.outcome.statsCorrect}, astro ${snap.outcome.astroCorrect}`);
+      }
 
       console.log(`[Monitor] ${symbol}: Predicted ₹${predictedMid.toFixed(2)}, Actual ₹${actualPrice.toFixed(2)}, Accuracy ${accuracy}%`);
 
