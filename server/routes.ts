@@ -17,6 +17,7 @@ import { db } from "./db";
 import { users } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { predictions, feedback, subscriptions, watchlist, astrologyCharts } from '@shared/schema';
+import { isGroqConfigured } from "./groqClient";
 
 // ── Request-validation helpers ───────────────────────────────────────────────
 
@@ -390,7 +391,7 @@ export function registerRoutes(app: Express): Server {
       
       const isDevMode = process.env.NODE_ENV === 'development';
       const showAstroDetails = isDevMode && req.user?.role === 'developer';
-      const finalPrediction = { stock: upperSymbol, when: whenDate.toISOString(), currentPrice, predLow: enhancedPrediction.prediction?.priceTarget?.low || Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100, predHigh: enhancedPrediction.prediction?.priceTarget?.high || Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100, confidence: enhancedPrediction.combinedConfidence || enhancedPrediction.prediction?.confidence || 50, exchange: realTimeQuote.exchange, direction: enhancedPrediction.finalDirection || 'neutral', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || enhancedPrediction.analysis?.keyRisks || [], recommendation: enhancedPrediction.astroRecommendation || enhancedPrediction.analysis?.recommendation || 'Hold and observe', reasoning: enhancedPrediction.reasoning || 'Astrology-based analysis', aiPowered: enhancedPrediction.metadata?.aiEnabled || false, livePriceAvailable: currentPrice > 0, feedbackEnhanced: enhancedPrediction.metadata?.feedbackLearningApplied || false, companyName: realTimeQuote.companyName, ...(showAstroDetails && { astrologyBias: realTimeQuote.astrologyBias || 0, horaInfluence: realTimeQuote.horaInfluence, astroFactors: enhancedPrediction.astroFactors, astroStrength: enhancedPrediction.astroStrength, astroPowered: true }) };
+      const finalPrediction = { stock: upperSymbol, when: whenDate.toISOString(), currentPrice, predLow: enhancedPrediction.prediction?.priceTarget?.low || Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100, predHigh: enhancedPrediction.prediction?.priceTarget?.high || Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100, confidence: enhancedPrediction.combinedConfidence || enhancedPrediction.prediction?.confidence || 50, exchange: realTimeQuote.exchange, direction: enhancedPrediction.finalDirection || 'neutral', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || enhancedPrediction.analysis?.keyRisks || [], recommendation: enhancedPrediction.aiConclusion?.recommendation || enhancedPrediction.astroRecommendation || enhancedPrediction.analysis?.recommendation || 'Hold and observe', reasoning: enhancedPrediction.reasoning || 'Astrology-based analysis', aiPowered: enhancedPrediction.metadata?.aiEnabled || false, livePriceAvailable: currentPrice > 0, feedbackEnhanced: enhancedPrediction.metadata?.feedbackLearningApplied || false, aiConclusion: enhancedPrediction.aiConclusion || null, companyName: realTimeQuote.companyName, ...(showAstroDetails && { astrologyBias: realTimeQuote.astrologyBias || 0, horaInfluence: realTimeQuote.horaInfluence, astroFactors: enhancedPrediction.astroFactors, astroStrength: enhancedPrediction.astroStrength, astroPowered: true }) };
       
       const statisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Standard technical analysis applied';
       const astroReasoning = enhancedPrediction.astroRecommendation || (enhancedPrediction.warnings?.length > 0 ? enhancedPrediction.warnings.join('; ') : null);
@@ -424,7 +425,7 @@ export function registerRoutes(app: Express): Server {
       const riskMultiplier = getTimeScaledRiskMultiplier(whenDate, riskLevel, false);
       
       const historicalData = await cryptoDataService.getCryptoHistoricalData(cryptoSymbol.toUpperCase(), 30);
-      const enhancedPrediction = await aiService.generateEnhancedCryptoPrediction(cryptoSymbol.toUpperCase(), currentPrice, userId, historicalData, cryptoQuote);
+      const enhancedPrediction = await aiService.generateEnhancedCryptoPrediction(cryptoSymbol.toUpperCase(), currentPrice, userId, historicalData, cryptoQuote, whenDate);
       
       // ★ Apply time scaling to crypto predictions
       let predLow, predHigh;
@@ -436,7 +437,7 @@ export function registerRoutes(app: Express): Server {
         predHigh = currentPrice * (1 + riskMultiplier);
       }
       
-      const finalPrediction = { crypto: cryptoSymbol.toUpperCase(), name: cryptoQuote.name, when: whenDate.toISOString(), currentPrice, predLow, predHigh, confidence: enhancedPrediction.combinedConfidence || 65, direction: enhancedPrediction.finalDirection || 'neutral', volatility: 'high', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || [], recommendation: enhancedPrediction.astroRecommendation || 'Hold and observe', reasoning: enhancedPrediction.reasoning || 'Astrology-based crypto analysis', marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h, aiPowered: enhancedPrediction.metadata?.aiEnabled || false, livePriceAvailable: currentPrice > 0 };
+      const finalPrediction = { crypto: cryptoSymbol.toUpperCase(), name: cryptoQuote.name, when: whenDate.toISOString(), currentPrice, predLow, predHigh, confidence: enhancedPrediction.combinedConfidence || 65, direction: enhancedPrediction.finalDirection || 'neutral', volatility: 'high', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || [], recommendation: enhancedPrediction.aiConclusion?.recommendation || enhancedPrediction.astroRecommendation || 'Hold and observe', reasoning: enhancedPrediction.reasoning || 'Astrology-based crypto analysis', marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h, aiPowered: enhancedPrediction.metadata?.aiEnabled || false, aiConclusion: enhancedPrediction.aiConclusion || null, livePriceAvailable: currentPrice > 0 };
       
       const cryptoStatisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Crypto technical analysis with volatility adjustment';
       const cryptoAstroReasoning = enhancedPrediction.astroRecommendation || null;
@@ -470,13 +471,13 @@ export function registerRoutes(app: Express): Server {
       const riskMultiplier = getTimeScaledRiskMultiplier(whenDate, req.body.riskLevel || 'high', false);
       
       const historicalData = await cryptoDataService.getCryptoHistoricalData(cryptoSymbol.toUpperCase(), 30);
-      const enhancedPrediction = await aiService.generateEnhancedCryptoPrediction(cryptoSymbol.toUpperCase(), currentPrice, userId, historicalData, cryptoQuote);
+      const enhancedPrediction = await aiService.generateEnhancedCryptoPrediction(cryptoSymbol.toUpperCase(), currentPrice, userId, historicalData, cryptoQuote, whenDate);
       
       // ★ Apply time scaling
       const predLow = Math.round(currentPrice * (1 - riskMultiplier) * 100) / 100;
       const predHigh = Math.round(currentPrice * (1 + riskMultiplier) * 100) / 100;
       
-      const finalPrediction = { crypto: cryptoSymbol.toUpperCase(), name: cryptoQuote.name, when: whenDate.toISOString(), currentPrice, predLow, predHigh, confidence: enhancedPrediction.combinedConfidence || 65, direction: enhancedPrediction.finalDirection || 'neutral', volatility: 'high', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || [], recommendation: enhancedPrediction.astroRecommendation || 'Hold and observe', marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h, aiPowered: enhancedPrediction.metadata?.aiEnabled || false, subscriptionId };
+      const finalPrediction = { crypto: cryptoSymbol.toUpperCase(), name: cryptoQuote.name, when: whenDate.toISOString(), currentPrice, predLow, predHigh, confidence: enhancedPrediction.combinedConfidence || 65, direction: enhancedPrediction.finalDirection || 'neutral', volatility: 'high', technicalFactors: enhancedPrediction.analysis?.technicalFactors || [], marketSentiment: enhancedPrediction.analysis?.marketSentiment || 'mixed', keyRisks: enhancedPrediction.warnings || [], recommendation: enhancedPrediction.aiConclusion?.recommendation || enhancedPrediction.astroRecommendation || 'Hold and observe', marketCap: cryptoQuote.marketCap, volume24h: cryptoQuote.volume24h, change24h: cryptoQuote.changePercent24h, aiPowered: enhancedPrediction.metadata?.aiEnabled || false, aiConclusion: enhancedPrediction.aiConclusion || null, subscriptionId };
       
       const cryptoStatisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Crypto technical analysis with volatility adjustment';
       const cryptoAstroReasoning = enhancedPrediction.astroRecommendation || null;
@@ -854,8 +855,8 @@ export function registerRoutes(app: Express): Server {
 
   app.get('/api/ai/status', async (req, res) => {
     try {
-      const isConfigured = !!process.env.OPENAI_API_KEY;
-      res.json({ aiEnabled: isConfigured, provider: isConfigured ? 'OpenAI GPT-4o' : 'Not configured', message: isConfigured ? 'AI-powered predictions active' : 'Using mathematical models instead.' });
+      const isConfigured = isGroqConfigured();
+      res.json({ aiEnabled: isConfigured, provider: isConfigured ? 'Groq llama-3.3-70b' : 'Built-in engine', message: isConfigured ? 'Groq AI reads the statistics + astrology and writes the conclusion; built-in engine is the fallback' : 'Groq key not set — using the built-in statistics + astrology engine.' });
     } catch (error) {
       res.status(500).json({ message: 'Error checking AI status' });
     }
