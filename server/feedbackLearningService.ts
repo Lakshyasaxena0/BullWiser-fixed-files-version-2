@@ -15,12 +15,19 @@ interface FeedbackMetrics {
   bestPerformingFactors: string[];
 }
 
-interface LearningAdjustment {
+export interface LearningAdjustment {
   confidenceAdjustment: number;
   directionBias: 'bullish' | 'bearish' | 'neutral' | null;
   strengthMultiplier: number;
   suggestedFactors: string[];
 }
+
+export const NEUTRAL_LEARNING_ADJUSTMENT: LearningAdjustment = {
+  confidenceAdjustment: 0,
+  directionBias: null,
+  strengthMultiplier: 1.0,
+  suggestedFactors: [],
+};
 
 export class FeedbackLearningService {
   // Store user feedback and actual outcomes
@@ -103,15 +110,17 @@ export class FeedbackLearningService {
       const usefulnessRate = usefulCount / recentFeedback.length;
 
       // Calculate confidence adjustment based on usefulness
+      // Check the most severe band first — a rate below 0.2 is also below 0.4, so the
+      // old order made the -20 branch unreachable.
       let confidenceAdjustment = 0;
       if (usefulnessRate > 0.8) {
         confidenceAdjustment = 10; // Boost confidence
       } else if (usefulnessRate > 0.6) {
         confidenceAdjustment = 5;
-      } else if (usefulnessRate < 0.4) {
-        confidenceAdjustment = -10; // Reduce confidence
       } else if (usefulnessRate < 0.2) {
         confidenceAdjustment = -20;
+      } else if (usefulnessRate < 0.4) {
+        confidenceAdjustment = -10; // Reduce confidence
       }
 
       // Analyze price patterns from feedback

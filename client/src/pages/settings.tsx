@@ -52,12 +52,12 @@ export default function SettingsPage() {
   const [show2FADialog, setShow2FADialog] = useState(false);
 
   // Fetch real subscription data
-  const { data: subscriptions } = useQuery({
+  const { data: subscriptions } = useQuery<any[]>({
     queryKey: ["/api/user/subscriptions"],
     enabled: isAuthenticated,
   });
 
-  const { data: predictions } = useQuery({
+  const { data: predictions } = useQuery<any[]>({
     queryKey: ["/api/user/predictions"],
     enabled: isAuthenticated,
   });

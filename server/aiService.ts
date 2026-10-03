@@ -7,7 +7,7 @@
 
 import OpenAI from 'openai';
 import { stockDataService }          from './stockDataService';
-import { feedbackLearningService }   from './feedbackLearningService';
+import { feedbackLearningService, NEUTRAL_LEARNING_ADJUSTMENT } from './feedbackLearningService';
 import { astrologyService }          from './astrologyService';
 import { advancedAstrologyService }  from './advancedAstrologyService';
 import { statisticalAnalysisService, type StatisticalAnalysisResult } from './statisticalAnalysisService';
@@ -114,15 +114,16 @@ export class AIService {
     symbol:        string,
     currentPrice:  number,
     userId?:       string,
-    historicalData?: any[]
+    historicalData?: any[],
+    targetDate:    Date = new Date()
   ): Promise<any> {
-    console.log(`[Pipeline] Starting prediction for ${symbol} @ ₹${currentPrice}`);
+    console.log(`[Pipeline] Starting prediction for ${symbol} @ ₹${currentPrice} (target ${targetDate.toISOString()})`);
     const sector = getSector(symbol);
 
     // ── Step 1: Feedback learning ─────────────────────────────────────────
     const learningAdjustment = await feedbackLearningService
       .getLearningAdjustments(symbol, userId || '')
-      .catch(() => ({ confidenceAdjustment: 0, suggestedFactors: [] }));
+      .catch(() => ({ ...NEUTRAL_LEARNING_ADJUSTMENT }));
 
     // ── Step 2: Statistical analysis (50% weight) ─────────────────────────
     let statsResult: StatisticalAnalysisResult | null = null;
@@ -140,7 +141,7 @@ export class AIService {
 
     // ── Step 3: Vedic Astrology (50% weight) ─────────────────────────────
     const astroPrediction = await astrologyService
-      .generateAstroPrediction(symbol, new Date(), currentPrice)
+      .generateAstroPrediction(symbol, targetDate, currentPrice)
       .catch(() => null);
 
     // ── Step 4: Advanced astrology (D-10, Sector, Transits, Yogas) ───────
@@ -149,8 +150,8 @@ export class AIService {
     let transitImpact = 0;
 
     try {
-      advancedAstroResult = await advancedAstrologyService.analyzeStockBySector(symbol, sector, new Date());
-      const d1Chart    = advancedAstrologyService.generateD1Chart(new Date(), '09:15', 19.0760, 72.8777);
+      advancedAstroResult = await advancedAstrologyService.analyzeStockBySector(symbol, sector, targetDate);
+      const d1Chart    = advancedAstrologyService.generateD1Chart(targetDate, '09:15', 19.0760, 72.8777);
       const d10Analysis = advancedAstrologyService.generateD10Chart(d1Chart);
       const careerYogas = d10Analysis?.yogas || [];
       yogaBonus = Math.max(-20, Math.min(20, Math.round(
@@ -161,7 +162,7 @@ export class AIService {
           return sum;
         }, 0)
       )));
-      const transits    = advancedAstrologyService.calculateTransits(d1Chart, new Date());
+      const transits    = advancedAstrologyService.calculateTransits(d1Chart, targetDate);
       const benefic     = transits.filter((t: any) => t.effect === 'beneficial').length;
       const malefic     = transits.filter((t: any) => t.effect === 'malefic').length;
       transitImpact     = Math.max(-15, Math.min(15, (benefic - malefic) * 3));

@@ -31,10 +31,13 @@ export default function CryptoPlans() {
     enabled: isAuthenticated,
   });
 
-  // Get crypto billing estimate
-  const { data: estimate } = useQuery({
+  // Get crypto billing estimate (apiRequest returns a raw Response, so parse it)
+  const { data: estimate } = useQuery<any>({
     queryKey: ["/api/billing/crypto/estimate", selectedPlan],
-    queryFn: () => apiRequest('POST', '/api/billing/crypto/estimate', selectedPlan),
+    queryFn: async () => {
+      const res = await apiRequest('POST', '/api/billing/crypto/estimate', selectedPlan);
+      return await res.json();
+    },
   });
 
   // Subscribe mutation

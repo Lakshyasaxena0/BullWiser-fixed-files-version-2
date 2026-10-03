@@ -7,7 +7,7 @@ import { useLocation } from "wouter";
 export default function TrendingStocks() {
   const [, setLocation] = useLocation();
   
-  const { data: marketData, isLoading } = useQuery({
+  const { data: marketData, isLoading } = useQuery<any>({
     queryKey: ["/api/market/overview"],
     refetchInterval: 60000, // Refresh every 60 seconds
   });

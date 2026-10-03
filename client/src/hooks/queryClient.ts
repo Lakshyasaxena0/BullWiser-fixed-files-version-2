@@ -51,10 +51,8 @@ export async function apiRequest(
 // ─── Query function factory ───────────────────────────────────────────────────
 type UnauthorizedBehavior = "returnNull" | "throw";
 
-export const getQueryFn: <T>(options: {
-  on401: UnauthorizedBehavior;
-}) => QueryFunction<T> =
-  ({ on401: unauthorizedBehavior }) =>
+export const getQueryFn =
+  <T>({ on401: unauthorizedBehavior }: { on401: UnauthorizedBehavior }): QueryFunction<T> =>
   async ({ queryKey }) => {
     // queryKey[0] is always the URL path, e.g. "/api/auth/user"
     const url = resolveUrl(queryKey[0] as string);

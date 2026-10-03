@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -17,7 +17,7 @@ export default defineConfig(async ({ mode }) => {
   const isReplit  = process.env.REPL_ID !== undefined;
   const isNetlify = process.env.NETLIFY !== undefined;
 
-  const plugins = [react()];
+  const plugins: PluginOption[] = [react()];
 
   // Bug 2 fix: runtimeErrorOverlay must never load in production builds.
   // Extra guard: also skip on Netlify — the package is a devDependency that

@@ -33,34 +33,36 @@ export class PredictionMonitoringService {
   
   // ── Monitor all predictions due today ─────────────────────────────────────
   async monitorDuePredictions(): Promise<void> {
-    console.log('[Monitor] Starting daily prediction monitoring...');
-    
-    const today = new Date();
-    const todayStart = new Date(today.setHours(0, 0, 0, 0));
-    const todayEnd = new Date(today.setHours(23, 59, 59, 999));
+    console.log('[Monitor] Starting prediction monitoring...');
+
+    const now = new Date();
 
     try {
-      // Find all predictions where targetDate is today
+      // Everything that has reached its target time and is still active.
+      // (The old "target date is today" window scored predictions hours BEFORE their
+      // target time on the first cron run of the day, and never picked up anything
+      // missed while the server was down.)
       const duePredictions = await db
         .select()
         .from(predictions)
         .where(
           and(
-            gte(predictions.targetDate, todayStart),
-            lte(predictions.targetDate, todayEnd),
+            lte(predictions.targetDate, now),
             eq(predictions.isActive, true)
           )
         );
 
-      console.log(`[Monitor] Found ${duePredictions.length} predictions due today`);
+      console.log(`[Monitor] Found ${duePredictions.length} predictions due`);
 
       for (const pred of duePredictions) {
         await this.checkPredictionAccuracy(pred);
       }
 
-      // After checking all predictions, retrain AI
-      await this.triggerAIRetrain();
-      
+      // Only retrain when there is something new to learn from
+      if (duePredictions.length > 0) {
+        await this.triggerAIRetrain();
+      }
+
     } catch (error) {
       console.error('[Monitor] Error monitoring predictions:', error);
     }

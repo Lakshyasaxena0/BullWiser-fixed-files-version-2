@@ -11,7 +11,7 @@ export default function StockRatePanel() {
   const [searchedStock, setSearchedStock] = useState("");
 
   // ✅ Fix: use full API path as query key so fetch hits /api/stock/TCS not /api/stock
-  const { data: stockData, isLoading, error } = useQuery({
+  const { data: stockData, isLoading, error } = useQuery<any>({
     queryKey: [`/api/stock/${searchedStock}`],
     enabled: !!searchedStock,
     refetchInterval: 30000,

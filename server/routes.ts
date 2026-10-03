@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { setupAuth, isAuthenticated } from "./auth";
+import { setupAuth, isAuthenticated, hashPassword, comparePasswords } from "./auth";
 import { insertSubscriptionSchema, insertFeedbackSchema, insertPredictionSchema, insertWatchlistSchema } from "@shared/schema";
 import { stockDataService } from "./stockDataService";
 import { cryptoDataService } from "./cryptoDataService";
@@ -15,8 +15,79 @@ import { predictionHistoryService } from "./predictionHistoryService";
 import * as crypto from 'crypto';
 import { db } from "./db";
 import { users } from "@shared/schema";
-import { eq } from "drizzle-orm";
-import { predictions, feedback } from '@shared/schema';
+import { eq, and } from "drizzle-orm";
+import { predictions, feedback, subscriptions, watchlist, astrologyCharts } from '@shared/schema';
+
+// ── Request-validation helpers ───────────────────────────────────────────────
+
+/** Parse the optional `when` field. Returns a valid Date, or null if it can't be parsed. */
+function parseWhen(when: unknown): Date | null {
+  if (!when || when === 'now') return new Date();
+  const d = new Date(when as string);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+const VALID_DURATIONS = ['daily', 'weekly', 'monthly', 'yearly'];
+const VALID_TRADE_TYPES = ['low', 'medium', 'high'];
+const VALID_MODES = ['suggestion', 'auto'];
+
+/**
+ * Validate and normalise billing inputs. Without this, a negative tradesPerDay produced a
+ * negative price (a free subscription), and non-numeric input produced NaN prices that
+ * crashed the insert with a 500.
+ */
+function parseBillingInput(body: any, kind: 'stock' | 'crypto'): { error: string } | { value: any } {
+  const mode = body.mode ?? 'suggestion';
+  const duration = body.duration ?? 'daily';
+  const tradesPerDay = parseInt(body.tradesPerDay ?? 2);
+  const referralCount = Math.max(0, parseInt(body.referralCount ?? 0) || 0);
+
+  if (!VALID_MODES.includes(mode)) return { error: `Invalid mode. Use one of: ${VALID_MODES.join(', ')}` };
+  if (!VALID_DURATIONS.includes(duration)) return { error: `Invalid duration. Use one of: ${VALID_DURATIONS.join(', ')}` };
+  if (!Number.isInteger(tradesPerDay) || tradesPerDay < 1 || tradesPerDay > 100) {
+    return { error: 'tradesPerDay must be a whole number between 1 and 100' };
+  }
+
+  if (kind === 'stock') {
+    const tradeType = body.tradeType ?? 'low';
+    if (!VALID_TRADE_TYPES.includes(tradeType)) return { error: `Invalid tradeType. Use one of: ${VALID_TRADE_TYPES.join(', ')}` };
+    return { value: { mode, tradeType, tradesPerDay, duration, referralCount } };
+  }
+
+  const cryptoValue = parseFloat(body.cryptoValue ?? 10000);
+  if (!isFinite(cryptoValue) || cryptoValue <= 0) return { error: 'cryptoValue must be a positive number' };
+  return { value: { mode, tradesPerDay, cryptoValue, duration, referralCount } };
+}
+
+/** Planetary snapshot stored with each prediction (shared by every prediction route). */
+async function buildPlanetaryData(whenDate: Date): Promise<any | null> {
+  try {
+    const astroData = await astrologyService.getCurrentAstrology(whenDate);
+    const planetaryObj: any = {};
+    if (Array.isArray(astroData.planetaryPositions)) {
+      astroData.planetaryPositions.forEach(p => {
+        planetaryObj[p.planet.toLowerCase()] = {
+          sign: p.sign,
+          degree: Math.round(p.degree * 10) / 10,
+          house: Math.floor((p.degree / 30) * 12) + 1,
+          retrograde: p.retrograde || false,
+        };
+      });
+    }
+    return {
+      ...planetaryObj,
+      hora: astroData.hora || null,
+      tithi: astroData.tithi || null,
+      nakshatra: astroData.nakshatra || null,
+      yoga: astroData.yoga || null,
+      karana: astroData.karana || null,
+      lunarPhase: astroData.lunarPhase || null,
+    };
+  } catch (astroError) {
+    console.log('[Predict] Could not fetch planetary data:', astroError);
+    return null;
+  }
+}
 
 function calculateBullwiserPrice(mode: string, tradeType: string, tradesPerDay: number, duration: string, referralCount: number = 0) {
   const tradeTypeRates = { 'low': 700, 'medium': 1400, 'high': 2100 };
@@ -181,8 +252,10 @@ export function registerRoutes(app: Express): Server {
 
   app.post('/api/billing/estimate', async (req, res) => {
     try {
-      const { mode = 'suggestion', tradeType = 'low', tradesPerDay = 2, duration = 'daily', referralCount = 0 } = req.body;
-      res.json(calculateBullwiserPrice(mode, tradeType, parseInt(tradesPerDay), duration, parseInt(referralCount)));
+      const parsed = parseBillingInput(req.body, 'stock');
+      if ('error' in parsed) return res.status(400).json({ message: parsed.error });
+      const { mode, tradeType, tradesPerDay, duration, referralCount } = parsed.value;
+      res.json(calculateBullwiserPrice(mode, tradeType, tradesPerDay, duration, referralCount));
     } catch (error) {
       res.status(500).json({ message: "Error calculating price" });
     }
@@ -190,8 +263,10 @@ export function registerRoutes(app: Express): Server {
 
   app.post('/api/billing/crypto/estimate', async (req, res) => {
     try {
-      const { mode = 'suggestion', tradesPerDay = 2, cryptoValue = 10000, duration = 'daily', referralCount = 0 } = req.body;
-      res.json(calculateCryptoBillingPrice(mode, parseInt(tradesPerDay), parseFloat(cryptoValue), duration, parseInt(referralCount)));
+      const parsed = parseBillingInput(req.body, 'crypto');
+      if ('error' in parsed) return res.status(400).json({ message: parsed.error });
+      const { mode, tradesPerDay, cryptoValue, duration, referralCount } = parsed.value;
+      res.json(calculateCryptoBillingPrice(mode, tradesPerDay, cryptoValue, duration, referralCount));
     } catch (error) {
       res.status(500).json({ message: "Error calculating crypto billing price" });
     }
@@ -231,8 +306,9 @@ export function registerRoutes(app: Express): Server {
       if (!activeStockSubscription) {
         return res.status(403).json({ message: "Active subscription required", error: "SUBSCRIPTION_REQUIRED", subscriptionType: "any" });
       }
-      const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
-      const upperSymbol = stock.toUpperCase();
+      const whenDate = parseWhen(when);
+      if (!whenDate) return res.status(400).json({ message: "Invalid date in 'when'" });
+      const upperSymbol = String(stock).toUpperCase();
       
       console.log(`[Predict] Generating prediction for ${upperSymbol} with target date: ${whenDate.toISOString()}`);
       
@@ -319,42 +395,10 @@ export function registerRoutes(app: Express): Server {
       const statisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Standard technical analysis applied';
       const astroReasoning = enhancedPrediction.astroRecommendation || (enhancedPrediction.warnings?.length > 0 ? enhancedPrediction.warnings.join('; ') : null);
       
-      // ★★★ FIXED: Save planetary data in correct format for frontend display
-      let planetaryData: any = null;
-      try {
-        const astroData = await astrologyService.getCurrentAstrology(whenDate);
-        
-        // Transform planetaryPositions array into object with planet names as keys
-        const planetaryObj: any = {};
-        if (astroData.planetaryPositions && Array.isArray(astroData.planetaryPositions)) {
-          astroData.planetaryPositions.forEach(p => {
-            const planetKey = p.planet.toLowerCase();
-            planetaryObj[planetKey] = {
-              sign: p.sign,
-              degree: Math.round(p.degree * 10) / 10,  // Round to 1 decimal
-              house: Math.floor((p.degree / 30) * 12) + 1,  // Calculate house from degree
-              retrograde: p.retrograde || false
-            };
-          });
-        }
-        
-        // Combine planetary positions with Vedic elements
-        planetaryData = {
-          ...planetaryObj,  // sun, moon, mercury, venus, mars, jupiter, saturn, etc.
-          hora: astroData.hora || null,
-          tithi: astroData.tithi || null,
-          nakshatra: astroData.nakshatra || null,
-          yoga: astroData.yoga || null,
-          karana: astroData.karana || null,
-          lunarPhase: astroData.lunarPhase || null
-        };
-        
-        console.log('[Predict] ✅ Planetary data saved:', Object.keys(planetaryData).join(', '));
-      } catch (astroError) {
-        console.log('[Predict] ❌ Could not fetch planetary data:', astroError);
-      }
-      
-      await storage.createPrediction({ userId, stock: finalPrediction.stock, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: req.body.mode || 'ai-astro-combined', riskLevel: req.body.riskLevel || 'medium', targetDate: whenDate, statisticalReasoning, astroReasoning, planetaryData: planetaryData ? JSON.stringify(planetaryData) : null });
+      // ★ Planetary snapshot for the target date (stored as a real JSON object in the jsonb column)
+      const planetaryData = await buildPlanetaryData(whenDate);
+
+      await storage.createPrediction({ userId, stock: finalPrediction.stock, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: req.body.mode || 'ai-astro-combined', riskLevel: req.body.riskLevel || 'medium', targetDate: whenDate, statisticalReasoning, astroReasoning, planetaryData });
       
       return res.json(finalPrediction);
     } catch (error) {
@@ -370,9 +414,10 @@ export function registerRoutes(app: Express): Server {
       const cryptoQuote = await cryptoDataService.getCryptoQuote(cryptoSymbol.toUpperCase());
       if (!cryptoQuote) return res.status(404).json({ message: "Cryptocurrency not found" });
       
-      const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
+      const whenDate = parseWhen(when);
+      if (!whenDate) return res.status(400).json({ message: "Invalid date in 'when'" });
       const currentPrice = cryptoQuote.adjustedPrice || cryptoQuote.lastPrice;
-      
+
       console.log(`[CryptoPredict] Generating prediction for ${cryptoSymbol} with target date: ${whenDate.toISOString()}`);
       
       // ★ Calculate time-based risk multiplier for crypto (higher volatility)
@@ -396,41 +441,10 @@ export function registerRoutes(app: Express): Server {
       const cryptoStatisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Crypto technical analysis with volatility adjustment';
       const cryptoAstroReasoning = enhancedPrediction.astroRecommendation || null;
       
-      // ★★★ FIXED: Save planetary data for crypto in correct format
-      let cryptoPlanetaryData: any = null;
-      try {
-        const astroData = await astrologyService.getCurrentAstrology(whenDate);
-        
-        // Transform planetaryPositions array into object with planet names as keys
-        const planetaryObj: any = {};
-        if (astroData.planetaryPositions && Array.isArray(astroData.planetaryPositions)) {
-          astroData.planetaryPositions.forEach(p => {
-            const planetKey = p.planet.toLowerCase();
-            planetaryObj[planetKey] = {
-              sign: p.sign,
-              degree: Math.round(p.degree * 10) / 10,
-              house: Math.floor((p.degree / 30) * 12) + 1,
-              retrograde: p.retrograde || false
-            };
-          });
-        }
-        
-        cryptoPlanetaryData = {
-          ...planetaryObj,
-          hora: astroData.hora || null,
-          tithi: astroData.tithi || null,
-          nakshatra: astroData.nakshatra || null,
-          yoga: astroData.yoga || null,
-          karana: astroData.karana || null,
-          lunarPhase: astroData.lunarPhase || null
-        };
-        
-        console.log('[CryptoPredict] ✅ Planetary data saved:', Object.keys(cryptoPlanetaryData).join(', '));
-      } catch (astroError) {
-        console.log('[CryptoPredict] ❌ Could not fetch planetary data:', astroError);
-      }
-      
-      await storage.createPrediction({ userId, stock: `CRYPTO_${finalPrediction.crypto}`, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode, riskLevel, targetDate: whenDate, statisticalReasoning: cryptoStatisticalReasoning, astroReasoning: cryptoAstroReasoning, planetaryData: cryptoPlanetaryData ? JSON.stringify(cryptoPlanetaryData) : null });
+      // ★ Planetary snapshot for the target date
+      const cryptoPlanetaryData = await buildPlanetaryData(whenDate);
+
+      await storage.createPrediction({ userId, stock: `CRYPTO_${finalPrediction.crypto}`, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode, riskLevel, targetDate: whenDate, statisticalReasoning: cryptoStatisticalReasoning, astroReasoning: cryptoAstroReasoning, planetaryData: cryptoPlanetaryData });
       
       return res.json(finalPrediction);
     } catch (error) {
@@ -446,7 +460,8 @@ export function registerRoutes(app: Express): Server {
       const subscription = await storage.getSubscription(subscriptionId);
       if (!subscription || subscription.userId !== userId) return res.status(403).json({ message: "Invalid or unauthorized subscription" });
       if (subscription.endTs < Math.floor(Date.now() / 1000)) return res.status(403).json({ message: "Subscription expired" });
-      const whenDate = (!when || when === 'now') ? new Date() : new Date(when);
+      const whenDate = parseWhen(when);
+      if (!whenDate) return res.status(400).json({ message: "Invalid date in 'when'" });
       const cryptoQuote = await cryptoDataService.getCryptoQuote(cryptoSymbol.toUpperCase());
       if (!cryptoQuote) return res.status(404).json({ message: "Cryptocurrency not found" });
       const currentPrice = cryptoQuote.adjustedPrice || cryptoQuote.lastPrice;
@@ -466,15 +481,11 @@ export function registerRoutes(app: Express): Server {
       const cryptoStatisticalReasoning = enhancedPrediction.analysis?.technicalFactors?.length > 0 ? enhancedPrediction.analysis.technicalFactors.join('; ') : 'Crypto technical analysis with volatility adjustment';
       const cryptoAstroReasoning = enhancedPrediction.astroRecommendation || null;
       
-      let cryptoPlanetaryData: any = null;
-      try {
-        const astroData = await astrologyService.getCurrentAstrology(whenDate);
-        cryptoPlanetaryData = { sun: astroData.planetaryPositions?.sun || null, moon: astroData.planetaryPositions?.moon || null, mercury: astroData.planetaryPositions?.mercury || null, venus: astroData.planetaryPositions?.venus || null, mars: astroData.planetaryPositions?.mars || null, jupiter: astroData.planetaryPositions?.jupiter || null, saturn: astroData.planetaryPositions?.saturn || null, hora: astroData.horaLord || null, nakshatra: astroData.currentNakshatra || null };
-      } catch (astroError) {
-        console.log('[CryptoPredict/Generate] Could not fetch planetary data:', astroError);
-      }
-      
-      await storage.createPrediction({ userId, stock: `CRYPTO_${finalPrediction.crypto}`, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: subscription.mode, riskLevel: req.body.riskLevel || 'high', targetDate: whenDate, statisticalReasoning: cryptoStatisticalReasoning, astroReasoning: cryptoAstroReasoning, planetaryData: cryptoPlanetaryData ? JSON.stringify(cryptoPlanetaryData) : null });
+      // This route previously read planets off the array as if it were an object (always null)
+      // and used fields that don't exist (horaLord, currentNakshatra). Use the shared builder.
+      const cryptoPlanetaryData = await buildPlanetaryData(whenDate);
+
+      await storage.createPrediction({ userId, stock: `CRYPTO_${finalPrediction.crypto}`, currentPrice: finalPrediction.currentPrice, predLow: finalPrediction.predLow, predHigh: finalPrediction.predHigh, confidence: finalPrediction.confidence, mode: subscription.mode, riskLevel: req.body.riskLevel || 'high', targetDate: whenDate, statisticalReasoning: cryptoStatisticalReasoning, astroReasoning: cryptoAstroReasoning, planetaryData: cryptoPlanetaryData });
       
       return res.json(finalPrediction);
     } catch (error) {
@@ -509,6 +520,7 @@ export function registerRoutes(app: Express): Server {
     try {
       const userId = req.user.id;
       const predictionId = parseInt(req.params.id);
+      if (isNaN(predictionId)) return res.status(400).json({ message: 'Invalid prediction id' });
       const details = await predictionHistoryService.getPredictionDetails(predictionId, userId);
       if (!details) {
         return res.status(404).json({ message: 'Prediction not found' });
@@ -559,12 +571,14 @@ export function registerRoutes(app: Express): Server {
   app.post('/api/subscribe', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.id;
-      const { mode = 'suggestion', tradeType = 'low', tradesPerDay = 2, duration = 'monthly', referralCount = 0 } = req.body;
-      const bill = calculateBullwiserPrice(mode, tradeType, parseInt(tradesPerDay), duration, parseInt(referralCount));
+      const parsed = parseBillingInput({ duration: 'monthly', ...req.body }, 'stock');
+      if ('error' in parsed) return res.status(400).json({ message: parsed.error });
+      const { mode, tradeType, tradesPerDay, duration, referralCount } = parsed.value;
+      const bill = calculateBullwiserPrice(mode, tradeType, tradesPerDay, duration, referralCount);
       const startTs = Math.floor(Date.now() / 1000);
-      const durationMap: any = { daily: 86400, weekly: 7 * 86400, monthly: 30 * 86400 };
-      const endTs = startTs + (durationMap[duration] || 365 * 86400);
-      const subscription = await storage.createSubscription({ userId, mode, tradeType, tradesPerDay: parseInt(tradesPerDay), duration, startTs, endTs, price: bill.finalBill });
+      const durationMap: any = { daily: 86400, weekly: 7 * 86400, monthly: 30 * 86400, yearly: 365 * 86400 };
+      const endTs = startTs + durationMap[duration];
+      const subscription = await storage.createSubscription({ userId, mode, tradeType, tradesPerDay, duration, startTs, endTs, price: bill.finalBill });
       res.json({ status: 'ok', invoice: bill, subscriptionId: subscription.id });
     } catch (error) {
       res.status(500).json({ message: "Error creating subscription" });
@@ -574,12 +588,14 @@ export function registerRoutes(app: Express): Server {
   app.post('/api/crypto/subscribe', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.id;
-      const { mode = 'suggestion', tradesPerDay = 2, cryptoValue = 10000, duration = 'monthly', referralCount = 0 } = req.body;
-      const bill = calculateCryptoBillingPrice(mode, parseInt(tradesPerDay), parseFloat(cryptoValue), duration, parseInt(referralCount));
+      const parsed = parseBillingInput({ duration: 'monthly', ...req.body }, 'crypto');
+      if ('error' in parsed) return res.status(400).json({ message: parsed.error });
+      const { mode, tradesPerDay, cryptoValue, duration, referralCount } = parsed.value;
+      const bill = calculateCryptoBillingPrice(mode, tradesPerDay, cryptoValue, duration, referralCount);
       const startTs = Math.floor(Date.now() / 1000);
-      const durationMap: any = { daily: 86400, weekly: 7 * 86400, monthly: 30 * 86400 };
-      const endTs = startTs + (durationMap[duration] || 365 * 86400);
-      const subscription = await storage.createSubscription({ userId, mode: `crypto-${mode}`, tradeType: 'crypto', tradesPerDay: parseInt(tradesPerDay), duration, startTs, endTs, price: bill.finalBill });
+      const durationMap: any = { daily: 86400, weekly: 7 * 86400, monthly: 30 * 86400, yearly: 365 * 86400 };
+      const endTs = startTs + durationMap[duration];
+      const subscription = await storage.createSubscription({ userId, mode: `crypto-${mode}`, tradeType: 'crypto', tradesPerDay, duration, startTs, endTs, price: bill.finalBill });
       res.json({ status: 'ok', invoice: bill, subscriptionId: subscription.id, type: 'crypto' });
     } catch (error) {
       res.status(500).json({ message: "Error creating crypto subscription" });
@@ -605,7 +621,7 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.post('/api/training/start', async (req, res) => {
+  app.post('/api/training/start', isAuthenticated, async (req, res) => {
     if (trainingInProgress) return res.json({ status: 'running' });
     runRealTraining();
     res.json({ status: 'started' });
@@ -679,7 +695,11 @@ export function registerRoutes(app: Express): Server {
 
   app.post('/api/user/watchlist', isAuthenticated, async (req: any, res) => {
     try {
-      res.json(await storage.addToWatchlist({ userId: req.user.id, stock: req.body.stock }));
+      const stock = typeof req.body.stock === 'string' ? req.body.stock.trim().toUpperCase() : '';
+      if (!stock) return res.status(400).json({ message: "Stock symbol is required" });
+      const existing = (await storage.getUserWatchlist(req.user.id)).find(w => w.stock === stock);
+      if (existing) return res.json(existing);
+      res.json(await storage.addToWatchlist({ userId: req.user.id, stock }));
     } catch (error) {
       res.status(500).json({ message: "Error adding to watchlist" });
     }
@@ -694,10 +714,14 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.get('/api/invoice/:id', async (req, res) => {
+  // Invoices contain another user's id and price, so they must be owner-only
+  // (the old route was public and IDs are sequential, so anyone could enumerate them).
+  app.get('/api/invoice/:id', isAuthenticated, async (req: any, res) => {
     try {
-      const subscription = await storage.getSubscription(parseInt(req.params.id));
-      if (!subscription) return res.status(404).json({ error: 'not found' });
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+      const subscription = await storage.getSubscription(id);
+      if (!subscription || subscription.userId !== req.user.id) return res.status(404).json({ error: 'not found' });
       res.json({ userId: subscription.userId, mode: subscription.mode, tradeType: subscription.tradeType, tradesPerDay: subscription.tradesPerDay, duration: subscription.duration, start: new Date(subscription.startTs * 1000).toISOString(), end: new Date(subscription.endTs * 1000).toISOString(), price: subscription.price });
     } catch (error) {
       res.status(500).json({ message: "Error fetching invoice" });
@@ -730,8 +754,13 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Lets any logged-in user make themselves 'developer'/'admin', so it is only
+  // available outside production (or when explicitly enabled with ALLOW_DEV_SET_ROLE=true).
   app.post('/api/dev/set-role', isAuthenticated, async (req: any, res) => {
     try {
+      if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEV_SET_ROLE !== 'true') {
+        return res.status(403).json({ message: "Role changes are disabled in production" });
+      }
       const { role } = req.body;
       if (!['user', 'developer', 'admin'].includes(role)) return res.status(400).json({ message: "Invalid role" });
       await storage.updateUserRole(req.user.id, role);
@@ -858,10 +887,14 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.post('/api/training/train-model', async (req: any, res) => {
+  // Model-training endpoints spawn Python processes, so they require a login and a safe model name.
+  const SAFE_MODEL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+  app.post('/api/training/train-model', isAuthenticated, async (req: any, res) => {
     try {
       const { trainingCases, modelName, modelType } = req.body;
       if (!trainingCases || !Array.isArray(trainingCases)) return res.status(400).json({ error: "Training cases array required" });
+      if (modelName !== undefined && !SAFE_MODEL_NAME.test(String(modelName))) return res.status(400).json({ error: "Invalid model name" });
       const result = await aiAstrologyTrainer.trainAndSaveModel(trainingCases, modelName || 'bullwiser_main', modelType || 'random_forest');
       result.success ? res.json({ success: true, modelPath: result.modelPath, accuracy: result.accuracy }) : res.status(500).json({ success: false, error: result.error });
     } catch (error) {
@@ -869,17 +902,18 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.post('/api/training/predict-with-model', async (req: any, res) => {
+  app.post('/api/training/predict-with-model', isAuthenticated, async (req: any, res) => {
     try {
       const { modelName, features } = req.body;
       if (!modelName || !features) return res.status(400).json({ error: "Model name and features required" });
+      if (!SAFE_MODEL_NAME.test(String(modelName))) return res.status(400).json({ error: "Invalid model name" });
       res.json(await aiAstrologyTrainer.predictWithSavedModel(modelName, features));
     } catch (error) {
       res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
-  app.get('/api/training/models', async (req: any, res) => {
+  app.get('/api/training/models', isAuthenticated, async (req: any, res) => {
     try {
       res.json(await aiAstrologyTrainer.listAvailableModels());
     } catch (error) {
@@ -937,19 +971,18 @@ export function registerRoutes(app: Express): Server {
     try {
       const userId = req.user.id;
       const { currentPassword, newPassword } = req.body;
+      if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+        return res.status(400).json({ message: "Current and new password are required" });
+      }
+      if (newPassword.length < 6) {
+        return res.status(400).json({ message: "Password must be at least 6 characters" });
+      }
       const [userRecord] = await db.select().from(users).where(eq(users.id, userId));
       if (!userRecord) return res.status(404).json({ message: "User not found" });
-      const { scrypt: sc, timingSafeEqual: tse } = await import('crypto');
-      const { promisify } = await import('util');
-      const scryptAsync = promisify(sc);
-      const [hashed, salt] = userRecord.password.split('.');
-      const currentBuf = Buffer.from(hashed, 'hex');
-      const suppliedBuf = (await scryptAsync(currentPassword, salt, 64)) as Buffer;
-      if (!tse(currentBuf, suppliedBuf)) return res.status(400).json({ message: "Current password is incorrect" });
-      const { randomBytes } = await import('crypto');
-      const newSalt = randomBytes(16).toString('hex');
-      const newBuf = (await scryptAsync(newPassword, newSalt, 64)) as Buffer;
-      await db.update(users).set({ password: `${newBuf.toString('hex')}.${newSalt}`, updatedAt: new Date() }).where(eq(users.id, userId));
+      if (!(await comparePasswords(currentPassword, userRecord.password))) {
+        return res.status(400).json({ message: "Current password is incorrect" });
+      }
+      await db.update(users).set({ password: await hashPassword(newPassword), updatedAt: new Date() }).where(eq(users.id, userId));
       res.json({ message: "Password updated successfully" });
     } catch (error) {
       res.status(500).json({ message: "Failed to change password" });
@@ -971,10 +1004,23 @@ export function registerRoutes(app: Express): Server {
   app.delete('/api/user/account', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.id;
-      await db.delete(users).where(eq(users.id, userId));
-      req.logout(() => {});
-      res.json({ message: "Account deleted successfully" });
+      // Every child table has a non-cascading FK to users.id, so deleting the user row
+      // alone failed with a constraint error for anyone who had any data. Remove the
+      // dependent rows first, atomically.
+      await db.transaction(async (tx) => {
+        await tx.delete(watchlist).where(eq(watchlist.userId, userId));
+        await tx.delete(feedback).where(eq(feedback.userId, userId));
+        await tx.delete(predictions).where(eq(predictions.userId, userId));
+        await tx.delete(subscriptions).where(eq(subscriptions.userId, userId));
+        await tx.delete(astrologyCharts).where(eq(astrologyCharts.userId, userId));
+        await tx.delete(users).where(eq(users.id, userId));
+      });
+      req.logout((err: any) => {
+        if (err) console.error('[Account] Logout after delete failed:', err);
+        res.json({ message: "Account deleted successfully" });
+      });
     } catch (error) {
+      console.error('[Account] Delete failed:', error);
       res.status(500).json({ message: "Failed to delete account" });
     }
   });

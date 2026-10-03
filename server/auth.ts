@@ -2,7 +2,7 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { Express } from "express";
 import session from "express-session";
-import { scrypt, randomBytes, timingSafeEqual } from "crypto";
+import { scrypt, randomBytes, timingSafeEqual, createHash } from "crypto";
 import { promisify } from "util";
 import { storage } from "./storage";
 import { User as SelectUser } from "@shared/schema";
@@ -17,18 +17,31 @@ declare global {
 
 const scryptAsync = promisify(scrypt);
 
-async function hashPassword(password: string) {
+export async function hashPassword(password: string) {
   const salt = randomBytes(16).toString("hex");
   const buf = (await scryptAsync(password, salt, 64)) as Buffer;
   return `${buf.toString("hex")}.${salt}`;
 }
 
-async function comparePasswords(supplied: string, stored: string) {
+export async function comparePasswords(supplied: string, stored: string) {
   const [hashed, salt] = stored.split(".");
   if (!hashed || !salt) return false;
   const hashedBuf = Buffer.from(hashed, "hex");
   const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
+  // timingSafeEqual throws if the buffers differ in length (e.g. a corrupt stored hash)
+  if (hashedBuf.length !== suppliedBuf.length) return false;
   return timingSafeEqual(hashedBuf, suppliedBuf);
+}
+
+// A random per-boot secret invalidates every session cookie on each restart
+// (and breaks multi-instance setups). Prefer SESSION_SECRET; otherwise derive a
+// stable secret from DATABASE_URL so logins survive restarts.
+function getSessionSecret(): string {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  console.warn("[Auth] SESSION_SECRET is not set — deriving a stable secret from DATABASE_URL. Set SESSION_SECRET in your environment.");
+  return createHash("sha256")
+    .update("bullwiser-session:" + (process.env.DATABASE_URL || "dev-only-secret"))
+    .digest("hex");
 }
 
 export function setupAuth(app: Express) {
@@ -44,7 +57,7 @@ export function setupAuth(app: Express) {
   app.set("trust proxy", 1);
 
   app.use(session({
-    secret: process.env.SESSION_SECRET || "bullwiser-secret-" + randomBytes(16).toString("hex"),
+    secret: getSessionSecret(),
     resave: false,
     saveUninitialized: false,
     store: sessionStore,
@@ -86,9 +99,10 @@ export function setupAuth(app: Express) {
   // Register
   app.post("/api/register", async (req, res, next) => {
     try {
-      const { username, password, confirmPassword, email, firstName, lastName } = req.body;
+      const { password, confirmPassword, email, firstName, lastName } = req.body;
+      const username = typeof req.body.username === "string" ? req.body.username.trim() : "";
 
-      if (!username || !password) {
+      if (!username || typeof password !== "string" || !password) {
         return res.status(400).json({ message: "Username and password are required" });
       }
       if (password !== confirmPassword) {
@@ -117,7 +131,13 @@ export function setupAuth(app: Express) {
         const { password: _, ...userWithoutPassword } = newUser;
         res.status(201).json(userWithoutPassword);
       });
-    } catch (err) {
+    } catch (err: any) {
+      // Unique-constraint violation (duplicate username/email, including a race
+      // between the existence check above and the insert) -> 400, not a 500.
+      if (err?.code === "23505") {
+        const field = String(err?.constraint || "").includes("email") ? "Email" : "Username";
+        return res.status(400).json({ message: `${field} already exists` });
+      }
       next(err);
     }
   });

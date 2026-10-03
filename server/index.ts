@@ -19,12 +19,26 @@ const app = express();
 //   2. Access-Control-Allow-Credentials must be "true"
 //   3. OPTIONS preflight must return 204 immediately
 // ─────────────────────────────────────────────────────────────────────────────
+// Comma-separated list of allowed browser origins, e.g.
+//   ALLOWED_ORIGINS=https://astrowizard.example,https://my-site.netlify.app
+// Reflecting every Origin while sending Allow-Credentials lets ANY website make
+// authenticated requests as a logged-in user, so set this in production.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+
+if (allowedOrigins.length === 0 && process.env.NODE_ENV === "production") {
+  console.warn("[CORS] ALLOWED_ORIGINS is not set — allowing ALL origins with credentials. Set ALLOWED_ORIGINS in production.");
+}
+
 app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
 
-  // Always set CORS headers for ANY origin during development/debugging.
-  // In production you can tighten this to specific domains.
-  if (origin) {
+  // Allow the origin if it is on the allowlist (or if no allowlist is configured,
+  // which keeps the previous allow-all behaviour for local development).
+  const originAllowed = !!origin && (allowedOrigins.length === 0 || allowedOrigins.includes(origin));
+  if (origin && originAllowed) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader(

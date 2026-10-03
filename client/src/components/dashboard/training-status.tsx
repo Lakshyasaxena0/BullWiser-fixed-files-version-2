@@ -11,19 +11,15 @@ export default function TrainingStatus() {
   const { toast } = useToast();
   const { user } = useAuth();
 
-  // Debug logging
-  console.log('TrainingStatus - Current user:', user);
-  console.log('TrainingStatus - User role:', user?.role);
+  const isDeveloper = !!user && user.role === 'developer';
 
-  // Only show training status for developers
-  if (!user || user.role !== 'developer') {
-    console.log('TrainingStatus - Hiding component, user role is not developer');
-    return null;
-  }
-
-  const { data: trainingStatus, refetch } = useQuery({
+  // Hooks must run on every render, so the developer-only gate is applied AFTER them
+  // (an early return before useQuery/useMutation changed the hook count when the user
+  // loaded or changed role and made React throw "Rendered more hooks than ...").
+  const { data: trainingStatus, refetch } = useQuery<{ progress?: number; message?: string }>({
     queryKey: ["/api/training/status"],
     refetchInterval: 5000, // Refetch every 5 seconds when training is active
+    enabled: isDeveloper,
   });
 
   const startTrainingMutation = useMutation({
@@ -69,6 +65,9 @@ export default function TrainingStatus() {
   const progress = trainingStatus?.progress || 0;
   const message = trainingStatus?.message || "Not started";
   const isTraining = progress > 0 && progress < 100;
+
+  // Only show training status for developers
+  if (!isDeveloper) return null;
 
   return (
     <Card className="shadow-sm border border-gray-200">

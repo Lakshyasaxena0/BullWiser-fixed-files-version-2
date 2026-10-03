@@ -43,28 +43,31 @@ export default function CryptoPredictions() {
   }, [isAuthenticated, isLoading, toast]);
 
   // Search cryptos
-  const { data: searchResults, isLoading: searchLoading } = useQuery({
+  const { data: searchResults, isLoading: searchLoading } = useQuery<any[]>({
     queryKey: ["/api/search/crypto", searchQuery],
     enabled: searchQuery.length > 1,
     staleTime: 30000, // 30 seconds
   });
 
   // Get crypto overview
-  const { data: cryptoOverview } = useQuery({
+  const { data: cryptoOverview } = useQuery<any>({
     queryKey: ["/api/crypto/overview"],
     staleTime: 60000, // 1 minute
   });
 
   // Get crypto predictions
-  const { data: cryptoPredictions } = useQuery({
+  const { data: cryptoPredictions } = useQuery<any[]>({
     queryKey: ["/api/user/predictions"],
     enabled: isAuthenticated,
   });
 
   // Crypto prediction mutation
   const predictMutation = useMutation({
+    // apiRequest resolves to the raw fetch Response — it has to be parsed, otherwise
+    // `data.crypto` / `data.confidence` below are undefined and the result card never fills in.
     mutationFn: async (data: any) => {
-      return apiRequest("POST", "/api/crypto/predict", data);
+      const res = await apiRequest("POST", "/api/crypto/predict", data);
+      return await res.json();
     },
     onSuccess: (data) => {
       setPredictionResult(data);

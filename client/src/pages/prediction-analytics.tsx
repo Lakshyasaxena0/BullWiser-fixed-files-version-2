@@ -54,7 +54,7 @@ export default function PredictionAnalytics() {
     refetchOnMount: true,
   });
 
-  const { data: stats } = useQuery({
+  const { data: stats } = useQuery<any>({
     queryKey: ['/api/predictions/stats'],
     refetchOnMount: true,
   });
