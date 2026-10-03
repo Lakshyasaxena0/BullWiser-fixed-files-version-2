@@ -2,26 +2,15 @@
 // aiService.ts
 // Prediction pipeline: Statistical Analysis (50%) + Vedic Astrology (50%)
 // AI (Groq llama-3.3-70b) interprets statistical results and combines with astro
-// Falls back to Groq automatically when OpenAI quota is exhausted
+// If Groq is unavailable, the built-in statistics + astrology engine produces the answer
 // ─────────────────────────────────────────────────────────────────────────────
 
-import OpenAI from 'openai';
+import { groqJSON } from './groqClient';
 import { stockDataService }          from './stockDataService';
 import { feedbackLearningService, NEUTRAL_LEARNING_ADJUSTMENT } from './feedbackLearningService';
 import { astrologyService }          from './astrologyService';
 import { advancedAstrologyService }  from './advancedAstrologyService';
 import { statisticalAnalysisService, type StatisticalAnalysisResult } from './statisticalAnalysisService';
-
-// ── Primary: OpenAI GPT-4o ────────────────────────────────────────────────────
-const openaiClient = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || '',
-});
-
-// ── Fallback: Groq llama-3.3-70b (free, fast, no quota issues) ───────────────
-const groqClient = new OpenAI({
-  apiKey:   process.env.Groq_API_key || '',   // same env var on Render
-  baseURL: 'https://api.groq.com/openai/v1',
-});
 
 // ── Stock → Sector mapping ────────────────────────────────────────────────────
 const STOCK_SECTOR_MAP: Record<string, string> = {
@@ -42,54 +31,14 @@ function getSector(symbol: string): string {
   return STOCK_SECTOR_MAP[symbol.toUpperCase()] || 'General';
 }
 
-// ── AI call with automatic Groq fallback ─────────────────────────────────────
+// ── AI call: Groq only. Returns null when Groq is unavailable, and the caller then uses the
+// built-in statistics + astrology engine (the formula result). ─────────────────────────────
 async function callAI(
   systemPrompt: string,
   userPrompt:   string,
   maxTokens:    number = 900
 ): Promise<any> {
-  // Try OpenAI first
-  try {
-    const res = await openaiClient.chat.completions.create({
-      model:    'gpt-4o',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: userPrompt   },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.3,
-      max_tokens:  maxTokens,
-    });
-    const text = res.choices[0]?.message?.content;
-    if (text) return JSON.parse(text);
-  } catch (err: any) {
-    // 429 = quota exceeded, 401 = bad key → fall through to Groq
-    if (err?.status === 429 || err?.status === 401 || err?.code === 'insufficient_quota') {
-      console.log('[AI] OpenAI quota exhausted — switching to Groq llama-3.3-70b');
-    } else {
-      console.error('[AI] OpenAI error:', err?.message || err);
-    }
-  }
-
-  // Groq fallback — always available, no quota issues
-  try {
-    const res = await groqClient.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages: [
-        { role: 'system', content: systemPrompt + '\n\nIMPORTANT: Return valid JSON only. No markdown, no code fences.' },
-        { role: 'user',   content: userPrompt   },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.3,
-      max_tokens:  maxTokens,
-    });
-    const text = res.choices[0]?.message?.content;
-    if (text) return JSON.parse(text);
-  } catch (groqErr: any) {
-    console.error('[AI] Groq fallback also failed:', groqErr?.message || groqErr);
-  }
-
-  return null;
+  return groqJSON(systemPrompt, userPrompt, maxTokens);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,7 +56,151 @@ interface AIAnalysis {
   astroWeight:     number;  // how much astro contributed (0-1)
 }
 
+type Direction = 'bullish' | 'bearish' | 'neutral';
+
+/** Everything the final AI step gets to study. */
+interface SynthesisInput {
+  assetType:    'stock' | 'crypto';
+  symbol:       string;
+  sector:       string;
+  currentPrice: number;
+  targetDate:   Date;
+  maxConfidence: number;
+  /** Statistical side: indicators + (optional) the AI's own reading of them. */
+  stats: {
+    signal:     Direction;
+    score:      number;
+    confidence: number;
+    summary:    string;
+    indicators: Record<string, any>;
+    aiReading?: any;
+    findings:   string[];
+    risks:      string[];
+  } | null;
+  /** Astrological side: rule-based Vedic signals. */
+  astro: {
+    direction:      Direction;
+    strength:       number;
+    confidence:     number;
+    recommendation: string;
+    warnings:       string[];
+    details:        Record<string, any>;
+  } | null;
+  /** What the fixed formula would have concluded — the safe fallback and a sanity anchor. */
+  formula: { direction: Direction; confidence: number };
+}
+
+export interface AIConclusion {
+  direction:      Direction;
+  confidence:     number;
+  agreement:      'aligned' | 'partial' | 'conflicting';
+  weighting:      { statistical: number; astrological: number };
+  summary:        string;
+  keyDrivers:     string[];
+  keyRisks:       string[];
+  recommendation: string;
+  /** True when the AI chose a different direction than the fixed formula. */
+  differsFromFormula: boolean;
+  formula:        { direction: Direction; confidence: number };
+}
+
+const asDirection = (v: any): Direction | null => {
+  const s = String(v ?? '').toLowerCase().trim();
+  return s === 'bullish' || s === 'bearish' || s === 'neutral' ? s : null;
+};
+const cleanText = (v: any, max: number): string =>
+  typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '';
+const cleanList = (v: any, count: number, max: number): string[] =>
+  Array.isArray(v) ? v.map(x => cleanText(x, max)).filter(Boolean).slice(0, count) : [];
+
 export class AIService {
+
+  // ── FINAL STEP: AI studies the statistical AND astrological analyses ─────
+  // Returns null when no AI provider answers, so callers keep the formula result.
+  private async synthesizeWithAI(input: SynthesisInput): Promise<AIConclusion | null> {
+    if (!input.stats && !input.astro) return null;
+
+    const horizonDays = Math.max(0, Math.round((input.targetDate.getTime() - Date.now()) / 86_400_000));
+
+    const systemPrompt = `You write the FINAL conclusion of a prediction report for Indian equity and crypto traders.
+You receive two independent analyses of the same asset:
+1. STATISTICAL — technical indicators computed from price history, plus an AI reading of them.
+2. VEDIC ASTROLOGY — rule-based timing and sentiment signals (hora, tithi, nakshatra, planetary positions, sector timing, yogas, transits).
+Study BOTH, decide how much weight each deserves, say where they agree or conflict, and give one clear, balanced conclusion.
+Rules:
+- Use only the data provided. Never invent prices, news or indicators.
+- Start from 50% statistical / 50% astrological. Shift the weighting only if one side is neutral, missing or clearly stronger, and reflect that in the weighting numbers.
+- If the two sides disagree, say so plainly and lower confidence instead of hiding the conflict.
+- Use hedged language ("suggests", "leans"). Never promise returns. This is analysis, not financial advice.
+- "direction" must be exactly one of: bullish, bearish, neutral.
+Respond with valid JSON only.`;
+
+    const userPrompt = `Asset: ${input.symbol} (${input.assetType}, sector: ${input.sector})
+Current price: ${input.currentPrice}
+Prediction target date: ${input.targetDate.toISOString().slice(0, 10)} (${horizonDays} day${horizonDays === 1 ? '' : 's'} ahead)
+
+STATISTICAL ANALYSIS:
+${JSON.stringify(input.stats ?? 'not available (not enough price history)')}
+
+ASTROLOGICAL ANALYSIS:
+${JSON.stringify(input.astro ?? 'not available')}
+
+FIXED-FORMULA RESULT (50/50 blend with adjustments): ${input.formula.direction}, confidence ${input.formula.confidence}
+
+Return JSON:
+{
+  "direction": "bullish|bearish|neutral",
+  "confidence": <number 30-90>,
+  "agreement": "aligned|partial|conflicting",
+  "weighting": { "statistical": <0-100>, "astrological": <0-100> },
+  "summary": "<2-3 plain-language sentences: what the statistics say, what the astrology says, and your overall conclusion>",
+  "keyDrivers": ["<up to 3 short points that decided the conclusion>"],
+  "keyRisks": ["<up to 3 short risks>"],
+  "recommendation": "<one short, cautious action>"
+}`;
+
+    const raw = await callAI(systemPrompt, userPrompt, 700);
+    if (!raw || typeof raw !== 'object') return null;
+
+    const summary = cleanText(raw.summary, 700);
+    if (!summary) return null; // an answer with no conclusion is not usable
+
+    // ── Guardrails: the AI refines the result, it cannot wander off from the evidence ──
+    // Direction must be one the inputs actually support (neutral is always allowed).
+    const allowed = new Set<Direction>(['neutral', input.formula.direction]);
+    if (input.stats) allowed.add(input.stats.signal);
+    if (input.astro) allowed.add(input.astro.direction);
+    const proposed = asDirection(raw.direction);
+    const direction: Direction = proposed && allowed.has(proposed) ? proposed : input.formula.direction;
+
+    // Confidence stays within ±15 of the formula and inside the global bounds.
+    const rawConf = Number(raw.confidence);
+    const nearFormula = isFinite(rawConf)
+      ? Math.min(input.formula.confidence + 15, Math.max(input.formula.confidence - 15, rawConf))
+      : input.formula.confidence;
+    const confidence = Math.round(Math.min(input.maxConfidence, Math.max(30, nearFormula)));
+
+    const agreement: AIConclusion['agreement'] =
+      ['aligned', 'partial', 'conflicting'].includes(raw.agreement) ? raw.agreement : 'partial';
+
+    let wStat = Number(raw.weighting?.statistical);
+    let wAstro = Number(raw.weighting?.astrological);
+    if (!isFinite(wStat) || !isFinite(wAstro) || wStat < 0 || wAstro < 0 || wStat + wAstro === 0) { wStat = 50; wAstro = 50; }
+    const total = wStat + wAstro;
+
+    return {
+      direction,
+      confidence,
+      agreement,
+      weighting: { statistical: Math.round((wStat / total) * 100), astrological: Math.round((wAstro / total) * 100) },
+      summary,
+      keyDrivers: cleanList(raw.keyDrivers, 3, 180),
+      keyRisks: cleanList(raw.keyRisks, 3, 180),
+      recommendation: cleanText(raw.recommendation, 220),
+      differsFromFormula: direction !== input.formula.direction,
+      formula: input.formula,
+    };
+  }
 
   // ── MAIN STOCK PREDICTION PIPELINE ───────────────────────────────────────
   async generateEnhancedPrediction(
@@ -203,9 +296,83 @@ export class AIService {
       } catch { /* non-fatal */ }
     }
 
+    // ── Step 8b: AI studies BOTH the statistical and astrological analyses ─
+    // and writes the final conclusion. If no AI provider answers, the formula
+    // result above stands unchanged.
+    const aiConclusion = await this.synthesizeWithAI({
+      assetType: 'stock',
+      symbol,
+      sector,
+      currentPrice,
+      targetDate,
+      maxConfidence: 95,
+      stats: statsResult ? {
+        signal:     statsResult.statisticalSignal as Direction,
+        score:      statsResult.statisticalScore,
+        confidence: aiStatsAnalysis?.confidence ?? statsResult.statisticalConfidence,
+        summary:    statsResult.technicalSummary,
+        indicators: {
+          rsi:         { value: Number(statsResult.rsi.value.toFixed(1)), signal: statsResult.rsi.signal },
+          macd:        { signal: statsResult.macd.signal, crossover: statsResult.macd.crossover },
+          trend:       statsResult.movingAverages.trend,
+          goldenCross: !!statsResult.movingAverages.goldenCross,
+          deathCross:  !!statsResult.movingAverages.deathCross,
+          adx:         statsResult.trendStrength.adx,
+          trendStrength: statsResult.trendStrength.trendStrength,
+          nearestSupport:    statsResult.supportResistance.nearestSupport,
+          nearestResistance: statsResult.supportResistance.nearestResistance,
+          dailyVolatilityPct: statsResult.volatility.dailyVolatility,
+          barsAnalysed: statsResult.analysedBars,
+        },
+        aiReading: aiStatsAnalysis ? {
+          direction: aiStatsAnalysis.direction,
+          confidence: aiStatsAnalysis.confidence,
+          strongestSignal: aiStatsAnalysis.strongestSignal,
+          reasoning: aiStatsAnalysis.reasoning,
+        } : undefined,
+        findings: (statsResult.keyFindings ?? []).slice(0, 5),
+        risks:    (statsResult.keyRisks ?? []).slice(0, 4),
+      } : null,
+      astro: astroPrediction ? {
+        direction:      astroPrediction.direction,
+        strength:       astroPrediction.strength,
+        confidence:     astroPrediction.confidence,
+        recommendation: astroPrediction.recommendation,
+        warnings:       (astroPrediction.warnings ?? []).slice(0, 4),
+        details: {
+          factorScores: astroPrediction.factors,
+          sectorTiming: advancedAstroResult?.timing ?? null,
+          sectorStrength: advancedAstroResult?.sectorStrength ?? null,
+          sectorFactors: (advancedAstroResult?.keyFactors ?? []).slice(0, 3),
+          yogaBonus,
+          transitImpact,
+        },
+      } : null,
+      formula: {
+        direction:  finalPrediction.finalDirection as Direction,
+        confidence: finalPrediction.combinedConfidence,
+      },
+    }).catch((err) => { console.error('[AI] Synthesis error (non-fatal):', err); return null; });
+
+    if (aiConclusion) {
+      finalPrediction.formulaResult = aiConclusion.formula;
+      finalPrediction.finalDirection = aiConclusion.direction;
+      finalPrediction.combinedConfidence = aiConclusion.confidence;
+      if (finalPrediction.prediction) {
+        finalPrediction.prediction.direction = aiConclusion.direction;
+        finalPrediction.prediction.confidence = aiConclusion.confidence;
+      }
+      if (finalPrediction.analysis && aiConclusion.recommendation) {
+        finalPrediction.analysis.recommendation = aiConclusion.recommendation;
+      }
+      finalPrediction.aiConclusion = aiConclusion;
+      console.log(`[AI] Conclusion for ${symbol}: ${aiConclusion.direction} @ ${aiConclusion.confidence}% (${aiConclusion.agreement}; formula said ${aiConclusion.formula.direction} @ ${aiConclusion.formula.confidence}%)`);
+    }
+
     // ── Step 9: Metadata ─────────────────────────────────────────────────
     finalPrediction.metadata = {
-      aiEnabled:            aiStatsAnalysis !== null,
+      aiEnabled:            aiStatsAnalysis !== null || aiConclusion !== null,
+      aiSynthesisEnabled:   aiConclusion !== null,
       astroEnabled:         astroPrediction !== null,
       advancedAstroEnabled: advancedAstroResult !== null,
       statsEnabled:         statsResult !== null,
@@ -220,7 +387,8 @@ export class AIService {
         statistics:  statsResult ? `${statsResult.analysedBars} bars of OHLCV data (RSI, MACD, BB, MA, Volume, ADX)` : 'No historical data available',
         astrology:   'Vedic — Hora, Tithi, Nakshatra, Planetary positions',
         advanced:    advancedAstroResult ? `D-10 Dashamsa + ${sector} Sector + Transits + Yogas` : 'Not available',
-        ai:          aiStatsAnalysis ? 'AI statistical interpretation (OpenAI GPT-4o / Groq fallback)' : 'Not available',
+        ai:          aiConclusion ? 'AI conclusion from statistical + astrological analysis (Groq llama-3.3-70b)'
+                   : aiStatsAnalysis ? 'AI statistical interpretation (Groq llama-3.3-70b)' : 'Not available',
         feedback:    learningAdjustment.suggestedFactors?.length > 0 ? 'Active feedback learning' : 'No feedback data yet',
       },
     };
@@ -480,7 +648,8 @@ Return JSON:
     currentPrice:   number,
     userId:         string,
     historicalData: any[] = [],
-    cryptoQuote?:   any
+    cryptoQuote?:   any,
+    targetDate:     Date = new Date()
   ): Promise<any> {
     // ── Statistical analysis of crypto historical data ────────────────────
     let statsResult: StatisticalAnalysisResult | null = null;
@@ -502,7 +671,7 @@ Return JSON:
       console.error('[Stats] Crypto stats error:', err);
     }
 
-    const astroAnalysis = await astrologyService.getCurrentAstrology(new Date());
+    const astroAnalysis = await astrologyService.getCurrentAstrology(targetDate);
     const userPers      = await feedbackLearningService.getUserPersonalization(userId).catch(() => null);
 
     // AI interprets crypto stats
@@ -524,7 +693,8 @@ Return JSON:
     let finalDir: 'bullish' | 'bearish' | 'neutral' =
       statsDir === astroDir ? statsDir : statsDir !== 'neutral' ? statsDir : astroDir;
 
-    const combinedConf = Math.min(80, Math.round((statsConf * 0.5 + astroStrength * 0.5)));
+    const combinedConf0 = Math.min(80, Math.round((statsConf * 0.5 + astroStrength * 0.5)));
+    let combinedConf = combinedConf0;
 
     const statsLow  = aiStatsAnalysis?.priceTarget?.low  ?? currentPrice * 0.92;
     const statsHigh = aiStatsAnalysis?.priceTarget?.high ?? currentPrice * 1.08;
@@ -542,6 +712,57 @@ Return JSON:
       'Crypto markets are highly volatile — always use stop-loss',
     ];
 
+    // ── AI studies BOTH analyses and writes the final conclusion ──────────
+    // (falls back to the formula result above if no AI provider answers)
+    const aiConclusion: AIConclusion | null = await this.synthesizeWithAI({
+      assetType: 'crypto',
+      symbol: cryptoSymbol,
+      sector: 'Crypto',
+      currentPrice,
+      targetDate,
+      maxConfidence: 80,
+      stats: statsResult ? {
+        signal:     statsResult.statisticalSignal as Direction,
+        score:      statsResult.statisticalScore,
+        confidence: statsConf,
+        summary:    statsResult.technicalSummary,
+        indicators: {
+          rsi:   { value: Number(statsResult.rsi.value.toFixed(1)), signal: statsResult.rsi.signal },
+          macd:  { signal: statsResult.macd.signal, crossover: statsResult.macd.crossover },
+          trend: statsResult.movingAverages.trend,
+          adx:   statsResult.trendStrength.adx,
+          dailyVolatilityPct: statsResult.volatility.dailyVolatility,
+          barsAnalysed: statsResult.analysedBars,
+        },
+        aiReading: aiStatsAnalysis ? {
+          direction: aiStatsAnalysis.direction,
+          confidence: aiStatsAnalysis.confidence,
+          strongestSignal: aiStatsAnalysis.strongestSignal,
+          reasoning: aiStatsAnalysis.reasoning,
+        } : undefined,
+        findings: (statsResult.keyFindings ?? []).slice(0, 5),
+        risks:    (statsResult.keyRisks ?? []).slice(0, 4),
+      } : null,
+      astro: {
+        direction:      astroDir,
+        strength:       Math.round(astroStrength),
+        confidence:     Math.round(astroStrength),
+        recommendation: `Astro score ${astroStrength.toFixed(0)}/100 → ${astroDir}`,
+        warnings:       [],
+        details: {
+          hora: astroAnalysis.hora, tithi: astroAnalysis.tithi, nakshatra: astroAnalysis.nakshatra,
+          yoga: astroAnalysis.yoga, lunarPhase: astroAnalysis.lunarPhase,
+        },
+      },
+      formula: { direction: finalDir, confidence: combinedConf0 },
+    }).catch((err) => { console.error('[AI] Crypto synthesis error (non-fatal):', err); return null; });
+
+    if (aiConclusion) {
+      finalDir = aiConclusion.direction;
+      combinedConf = aiConclusion.confidence;
+      console.log(`[AI] Conclusion for ${cryptoSymbol}: ${aiConclusion.direction} @ ${aiConclusion.confidence}% (${aiConclusion.agreement}; formula said ${aiConclusion.formula.direction} @ ${aiConclusion.formula.confidence}%)`);
+    }
+
     return {
       prediction: { direction: finalDir, priceTarget: { low: blendedLow, high: blendedHigh } },
       combinedConfidence: combinedConf,
@@ -551,8 +772,9 @@ Return JSON:
         technicalFactors: techFactors,
         marketSentiment:  aiStatsAnalysis?.marketSentiment ?? 'Volatile crypto market',
         keyRisks:         risks,
-        recommendation:   aiStatsAnalysis?.recommendation ?? 'Monitor closely with stop-loss',
+        recommendation:   aiConclusion?.recommendation || aiStatsAnalysis?.recommendation || 'Monitor closely with stop-loss',
       },
+      aiConclusion,
       astroRecommendation: `Astro score: ${astroStrength.toFixed(0)}/100 → ${astroDir}`,
       warnings:    risks,
       reasoning:   aiStatsAnalysis?.reasoning ?? statsResult?.technicalSummary ?? 'Statistical + astrological analysis',
@@ -563,13 +785,14 @@ Return JSON:
       astroFactors:       astroAnalysis,
       astroStrength,
       metadata: {
-        aiEnabled:    aiStatsAnalysis !== null,
+        aiEnabled:    aiStatsAnalysis !== null || aiConclusion !== null,
+        aiSynthesisEnabled: aiConclusion !== null,
         statsEnabled: statsResult !== null,
         weighting:    { statistical: '50%', astrological: '50%' },
         sources: {
           statistics: statsResult ? `${statsResult.analysedBars} bars` : 'No historical data',
           astrology:  'Vedic astrology',
-          ai:         aiStatsAnalysis ? 'OpenAI/Groq' : 'Not available',
+          ai:         aiConclusion ? 'Groq conclusion from statistics + astrology' : aiStatsAnalysis ? 'Groq' : 'Not available',
         },
       },
       userPersonalization: userPers ? { accuracyBoost: userPers.personalizedConfidenceBoost } : null,
