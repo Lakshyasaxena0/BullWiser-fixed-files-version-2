@@ -17,6 +17,7 @@ import { db } from "./db";
 import { users } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { predictions, feedback, subscriptions, watchlist, astrologyCharts } from '@shared/schema';
+import { isGroqConfigured } from "./groqClient";
 
 // ── Request-validation helpers ───────────────────────────────────────────────
 
@@ -854,8 +855,8 @@ export function registerRoutes(app: Express): Server {
 
   app.get('/api/ai/status', async (req, res) => {
     try {
-      const isConfigured = !!process.env.OPENAI_API_KEY;
-      res.json({ aiEnabled: isConfigured, provider: isConfigured ? 'OpenAI GPT-4o' : 'Not configured', message: isConfigured ? 'AI-powered predictions active' : 'Using mathematical models instead.' });
+      const isConfigured = isGroqConfigured();
+      res.json({ aiEnabled: isConfigured, provider: isConfigured ? 'Groq llama-3.3-70b' : 'Built-in engine', message: isConfigured ? 'Groq AI reads the statistics + astrology and writes the conclusion; built-in engine is the fallback' : 'Groq key not set — using the built-in statistics + astrology engine.' });
     } catch (error) {
       res.status(500).json({ message: 'Error checking AI status' });
     }

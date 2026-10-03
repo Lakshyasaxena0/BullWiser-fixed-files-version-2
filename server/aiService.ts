@@ -2,26 +2,15 @@
 // aiService.ts
 // Prediction pipeline: Statistical Analysis (50%) + Vedic Astrology (50%)
 // AI (Groq llama-3.3-70b) interprets statistical results and combines with astro
-// Falls back to Groq automatically when OpenAI quota is exhausted
+// If Groq is unavailable, the built-in statistics + astrology engine produces the answer
 // ─────────────────────────────────────────────────────────────────────────────
 
-import OpenAI from 'openai';
+import { groqJSON } from './groqClient';
 import { stockDataService }          from './stockDataService';
 import { feedbackLearningService, NEUTRAL_LEARNING_ADJUSTMENT } from './feedbackLearningService';
 import { astrologyService }          from './astrologyService';
 import { advancedAstrologyService }  from './advancedAstrologyService';
 import { statisticalAnalysisService, type StatisticalAnalysisResult } from './statisticalAnalysisService';
-
-// ── Primary: OpenAI GPT-4o ────────────────────────────────────────────────────
-const openaiClient = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || '',
-});
-
-// ── Fallback: Groq llama-3.3-70b (free, fast, no quota issues) ───────────────
-const groqClient = new OpenAI({
-  apiKey:   process.env.Groq_API_key || '',   // same env var on Render
-  baseURL: 'https://api.groq.com/openai/v1',
-});
 
 // ── Stock → Sector mapping ────────────────────────────────────────────────────
 const STOCK_SECTOR_MAP: Record<string, string> = {
@@ -42,58 +31,14 @@ function getSector(symbol: string): string {
   return STOCK_SECTOR_MAP[symbol.toUpperCase()] || 'General';
 }
 
-// The SDK default is a 10-minute timeout with 2 retries, so one slow provider could stall a
-// prediction for many minutes before the fallback ran. Fail fast instead.
-const AI_REQUEST_OPTIONS = { timeout: 20_000, maxRetries: 1 };
-
-// ── AI call with automatic Groq fallback ─────────────────────────────────────
+// ── AI call: Groq only. Returns null when Groq is unavailable, and the caller then uses the
+// built-in statistics + astrology engine (the formula result). ─────────────────────────────
 async function callAI(
   systemPrompt: string,
   userPrompt:   string,
   maxTokens:    number = 900
 ): Promise<any> {
-  // Try OpenAI first
-  try {
-    const res = await openaiClient.chat.completions.create({
-      model:    'gpt-4o',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: userPrompt   },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.3,
-      max_tokens:  maxTokens,
-    }, AI_REQUEST_OPTIONS);
-    const text = res.choices[0]?.message?.content;
-    if (text) return JSON.parse(text);
-  } catch (err: any) {
-    // 429 = quota exceeded, 401 = bad key → fall through to Groq
-    if (err?.status === 429 || err?.status === 401 || err?.code === 'insufficient_quota') {
-      console.log('[AI] OpenAI quota exhausted — switching to Groq llama-3.3-70b');
-    } else {
-      console.error('[AI] OpenAI error:', err?.message || err);
-    }
-  }
-
-  // Groq fallback — always available, no quota issues
-  try {
-    const res = await groqClient.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages: [
-        { role: 'system', content: systemPrompt + '\n\nIMPORTANT: Return valid JSON only. No markdown, no code fences.' },
-        { role: 'user',   content: userPrompt   },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.3,
-      max_tokens:  maxTokens,
-    }, AI_REQUEST_OPTIONS);
-    const text = res.choices[0]?.message?.content;
-    if (text) return JSON.parse(text);
-  } catch (groqErr: any) {
-    console.error('[AI] Groq fallback also failed:', groqErr?.message || groqErr);
-  }
-
-  return null;
+  return groqJSON(systemPrompt, userPrompt, maxTokens);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -442,8 +387,8 @@ Return JSON:
         statistics:  statsResult ? `${statsResult.analysedBars} bars of OHLCV data (RSI, MACD, BB, MA, Volume, ADX)` : 'No historical data available',
         astrology:   'Vedic — Hora, Tithi, Nakshatra, Planetary positions',
         advanced:    advancedAstroResult ? `D-10 Dashamsa + ${sector} Sector + Transits + Yogas` : 'Not available',
-        ai:          aiConclusion ? 'AI conclusion from statistical + astrological analysis (OpenAI GPT-4o / Groq fallback)'
-                   : aiStatsAnalysis ? 'AI statistical interpretation (OpenAI GPT-4o / Groq fallback)' : 'Not available',
+        ai:          aiConclusion ? 'AI conclusion from statistical + astrological analysis (Groq llama-3.3-70b)'
+                   : aiStatsAnalysis ? 'AI statistical interpretation (Groq llama-3.3-70b)' : 'Not available',
         feedback:    learningAdjustment.suggestedFactors?.length > 0 ? 'Active feedback learning' : 'No feedback data yet',
       },
     };
@@ -847,7 +792,7 @@ Return JSON:
         sources: {
           statistics: statsResult ? `${statsResult.analysedBars} bars` : 'No historical data',
           astrology:  'Vedic astrology',
-          ai:         aiConclusion ? 'OpenAI/Groq conclusion from statistics + astrology' : aiStatsAnalysis ? 'OpenAI/Groq' : 'Not available',
+          ai:         aiConclusion ? 'Groq conclusion from statistics + astrology' : aiStatsAnalysis ? 'Groq' : 'Not available',
         },
       },
       userPersonalization: userPers ? { accuracyBoost: userPers.personalizedConfidenceBoost } : null,

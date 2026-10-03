@@ -7,7 +7,7 @@ BullWiser is an advanced AI-powered stock prediction platform built as a full-st
 - **Registration with Password Confirmation**: Users must enter password twice for security
 - **Secure Password Storage**: Using Scrypt hashing with salt for password security
 - **NSE/BSE API Integration**: Implemented real-time stock data from National Stock Exchange and Bombay Stock Exchange using the stock-nse-india library
-- **Real AI Integration**: Integrated OpenAI GPT-4o for genuine AI-powered stock analysis with OPENAI_API_KEY configured
+- **Real AI Integration**: Integrated Groq for genuine AI-powered stock analysis with OPENAI_API_KEY configured
 - **Privacy-First Astrology**: Astrology calculations run in background but details are hidden from users (developer-only)
 - **Real-Time Astronomical Calculations**: No mock data - all astrology uses real ephemeris calculations
 - **AI Training on Astrological Charts**: AI now reads and interprets D1, D9, D10 divisional charts with transits and Dasha periods
@@ -79,7 +79,7 @@ Preferred communication style: Simple, everyday language.
 
 ## Key Features
 - **Real-time Stock Data**: Live NSE/BSE market data integration with stock-nse-india library
-- **AI-Powered Analysis**: Integration with OpenAI GPT-4o for intelligent stock analysis and predictions
+- **AI-Powered Analysis**: Integration with Groq llama-3.3-70b for intelligent stock analysis and predictions
 - **Privacy-First Astrology System**: Comprehensive Vedic astrology calculations with 60% weight in predictions (hidden from users):
   - Hora (planetary hours) with ruling planet influence
   - Tithi, Nakshatra, Yoga, and Karana calculations
@@ -111,7 +111,7 @@ Preferred communication style: Simple, everyday language.
 
 ### Prediction Endpoints
 - `POST /api/predict` - Combined AI + Astrology + Feedback-enhanced predictions
-  - Uses OpenAI GPT-4o when OPENAI_API_KEY is configured
+  - Uses Groq when Groq_API_key is configured; otherwise the built-in engine
   - Applies advanced Vedic astrology calculations
   - Adjusts based on user feedback history
   - Returns combined confidence scores
@@ -130,7 +130,7 @@ Preferred communication style: Simple, everyday language.
   - Returns: Hora, Tithi, Nakshatra, planetary positions, muhurat windows
 
 ### System Architecture Details
-- **AI Integration**: OpenAI GPT-4o for technical analysis (40% weight)
+- **AI Integration**: Groq llama-3.3-70b for technical analysis (40% weight)
 - **Astrology System**: Advanced Vedic calculations (60% weight)
 - **Chart Reading AI**: Trained to interpret D1, D9, D10 divisional charts
 - **Sector Mappings**: Planetary rulers for each stock sector (IT, Banking, Pharma, etc.)
@@ -146,7 +146,7 @@ Preferred communication style: Simple, everyday language.
   - Provides user-specific personalization
 - **Combined Prediction Flow**:
   1. Get real-time stock data from NSE/BSE
-  2. Generate AI prediction (if OpenAI configured)
+  2. Generate AI prediction (if Groq configured)
   3. Calculate astrology prediction
   4. Combine with astrology having precedence
   5. Apply feedback learning adjustments
