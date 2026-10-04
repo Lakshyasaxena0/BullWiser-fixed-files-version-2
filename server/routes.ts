@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { setupAuth, isAuthenticated, hashPassword, comparePasswords } from "./auth";
 import { registerPasswordResetRoutes } from "./passwordReset";
 import { registerPaymentRoutes } from "./payments";
+import { registerReferralRoutes, usableCredits } from "./referrals";
 import { insertSubscriptionSchema, insertFeedbackSchema, insertPredictionSchema, insertWatchlistSchema } from "@shared/schema";
 import { stockDataService } from "./stockDataService";
 import { cryptoDataService } from "./cryptoDataService";
@@ -235,6 +236,7 @@ async function runRealTraining() {
 export function registerRoutes(app: Express): Server {
   setupAuth(app);
   registerPasswordResetRoutes(app);
+  registerReferralRoutes(app);
   registerPaymentRoutes(app, { parseBillingInput, calculateStock: calculateBullwiserPrice, calculateCrypto: calculateCryptoBillingPrice });
 
   app.get('/api/warmup', async (req, res) => {
@@ -255,22 +257,24 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
-  app.post('/api/billing/estimate', async (req, res) => {
+  app.post('/api/billing/estimate', async (req: any, res) => {
     try {
       const parsed = parseBillingInput(req.body, 'stock');
       if ('error' in parsed) return res.status(400).json({ message: parsed.error });
-      const { mode, tradeType, tradesPerDay, duration, referralCount } = parsed.value;
+      const { mode, tradeType, tradesPerDay, duration } = parsed.value;
+      const referralCount = req.isAuthenticated?.() ? await usableCredits(req.user.id) : 0; // from the database, not the browser
       res.json(calculateBullwiserPrice(mode, tradeType, tradesPerDay, duration, referralCount));
     } catch (error) {
       res.status(500).json({ message: "Error calculating price" });
     }
   });
 
-  app.post('/api/billing/crypto/estimate', async (req, res) => {
+  app.post('/api/billing/crypto/estimate', async (req: any, res) => {
     try {
       const parsed = parseBillingInput(req.body, 'crypto');
       if ('error' in parsed) return res.status(400).json({ message: parsed.error });
-      const { mode, tradesPerDay, cryptoValue, duration, referralCount } = parsed.value;
+      const { mode, tradesPerDay, cryptoValue, duration } = parsed.value;
+      const referralCount = req.isAuthenticated?.() ? await usableCredits(req.user.id) : 0;
       res.json(calculateCryptoBillingPrice(mode, tradesPerDay, cryptoValue, duration, referralCount));
     } catch (error) {
       res.status(500).json({ message: "Error calculating crypto billing price" });
