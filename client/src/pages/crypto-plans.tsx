@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Bitcoin, Check, TrendingUp, Shield, Zap, ChevronLeft } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { payForPlan } from "@/lib/razorpay";
+import { ReferralCard } from "@/components/ReferralCard";
 import { useLocation } from "wouter";
 
 export default function CryptoPlans() {
@@ -122,6 +123,8 @@ export default function CryptoPlans() {
           </div>
         </div>
       </div>
+
+      <ReferralCard />
 
       {/* Current Plan Status */}
       {activeCryptoSubscription && (
@@ -310,6 +313,13 @@ export default function CryptoPlans() {
                     <div className="flex justify-between items-center text-green-600">
                       <span>Duration Discount ({estimate.durationDiscountApplied}%)</span>
                       <span className="font-semibold">-₹{estimate.subtotal - estimate.afterDurationDiscount}</span>
+                    </div>
+                  )}
+
+                  {estimate.referralDiscountApplied > 0 && (
+                    <div className="flex justify-between items-center text-green-600">
+                      <span>Referral Discount ({estimate.referralDiscountApplied}%)</span>
+                      <span className="font-semibold">-₹{estimate.afterDurationDiscount - estimate.afterReferralDiscount}</span>
                     </div>
                   )}
 
