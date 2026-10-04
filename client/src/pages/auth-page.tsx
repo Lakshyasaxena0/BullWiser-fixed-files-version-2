@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
@@ -18,6 +18,28 @@ export default function AuthPage() {
   const { isAuthenticated, isLoading } = useAuth();
   const [, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState("login");
+
+  // Friend's referral link: /auth?ref=CODE  → open the Register tab with the code filled in
+  const [referralCode, setReferralCode] = useState("");
+  const [referralValid, setReferralValid] = useState<boolean | null>(null);
+  useEffect(() => {
+    let code = "";
+    try { code = new URLSearchParams(window.location.search).get("ref") || sessionStorage.getItem("bw_ref") || ""; } catch { /* storage blocked */ }
+    code = code.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+    if (code) {
+      try { sessionStorage.setItem("bw_ref", code); } catch { /* ignore */ }
+      setReferralCode(code);
+      setActiveTab("register");
+    }
+  }, []);
+  useEffect(() => {
+    if (referralCode.length < 4) { setReferralValid(null); return; }
+    const t = setTimeout(() => {
+      fetch(`/api/referrals/validate?code=${encodeURIComponent(referralCode)}`)
+        .then((r) => r.json()).then((j) => setReferralValid(Boolean(j?.valid))).catch(() => setReferralValid(null));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [referralCode]);
 
   if (!isLoading && isAuthenticated) {
     setLocation("/");
@@ -42,7 +64,7 @@ export default function AuthPage() {
   const registerMutation = useMutation({
     mutationFn: async (userData: {
       username: string; password: string; confirmPassword: string;
-      email?: string; firstName?: string; lastName?: string;
+      email?: string; firstName?: string; lastName?: string; referralCode?: string;
     }) => {
       const res = await apiRequest("POST", "/api/register", userData);
       if (!res.ok) {
@@ -52,6 +74,7 @@ export default function AuthPage() {
       return await res.json();
     },
     onSuccess: (user) => {
+      try { sessionStorage.removeItem("bw_ref"); } catch { /* ignore */ }
       queryClient.setQueryData(["/api/auth/user"], user);
       toast({ title: "Account created!", description: "Your account has been successfully created." });
       setLocation("/");
@@ -80,6 +103,7 @@ export default function AuthPage() {
       email: formData.get("email") as string,
       firstName: formData.get("firstName") as string,
       lastName: formData.get("lastName") as string,
+      referralCode: referralCode || undefined,
     });
   };
 
@@ -148,6 +172,18 @@ export default function AuthPage() {
                   <div className="space-y-2">
                     <Label htmlFor="confirmPassword">Confirm Password *</Label>
                     <PasswordInput id="confirmPassword" name="confirmPassword" placeholder="Re-enter your password" required minLength={6} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="referral-code">Referral code (optional)</Label>
+                    <Input
+                      id="referral-code"
+                      value={referralCode}
+                      onChange={(e) => setReferralCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16))}
+                      placeholder="Friend's code"
+                      autoComplete="off"
+                    />
+                    {referralValid === true && <p className="text-xs text-green-600">✓ Code accepted — your friend gets a reward when you make your first payment.</p>}
+                    {referralValid === false && <p className="text-xs text-red-600">This code was not found. You can still sign up without it.</p>}
                   </div>
                   <Button type="submit" className="w-full" disabled={registerMutation.isPending}>
                     {registerMutation.isPending ? "Creating account..." : "Create Account"}
