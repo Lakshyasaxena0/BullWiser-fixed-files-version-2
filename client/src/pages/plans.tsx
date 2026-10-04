@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { payForPlan } from "@/lib/razorpay";
+import { ReferralCard } from "@/components/ReferralCard";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -291,6 +292,12 @@ export default function Plans() {
                     <span className="text-green-600">-₹{(estimate.basePrice - estimate.afterDurationDiscount).toLocaleString()}</span>
                   </div>
                 )}
+                {estimate.referralDiscountApplied > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-green-600">Referral Discount ({estimate.referralDiscountApplied}%)</span>
+                    <span className="text-green-600">-₹{(estimate.afterDurationDiscount - estimate.afterReferralDiscount).toLocaleString()}</span>
+                  </div>
+                )}
                 {estimate.autoModeSurcharge > 0 && (
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600">Auto Mode Surcharge</span>
@@ -373,6 +380,8 @@ export default function Plans() {
           </CardContent>
         </Card>
       </div>
+
+      <ReferralCard />
 
       {/* Subscribe Button */}
       <Card className="bg-gradient-to-r from-primary/5 to-primary/10 border-primary/20">
