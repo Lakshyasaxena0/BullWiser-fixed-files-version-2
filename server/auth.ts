@@ -1,3 +1,4 @@
+import { attachReferral } from "./referrals";
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { Express } from "express";
@@ -99,7 +100,7 @@ export function setupAuth(app: Express) {
   // Register
   app.post("/api/register", async (req, res, next) => {
     try {
-      const { password, confirmPassword, email, firstName, lastName } = req.body;
+      const { password, confirmPassword, email, firstName, lastName, referralCode } = req.body;
       const username = typeof req.body.username === "string" ? req.body.username.trim() : "";
 
       if (!username || typeof password !== "string" || !password) {
@@ -130,6 +131,9 @@ export function setupAuth(app: Express) {
         firstName: firstName || null,
         lastName: lastName || null,
       });
+
+      // Friend's referral code (optional). Failures here never block sign-up.
+      if (referralCode) await attachReferral(newUser.id, referralCode);
 
       req.login(newUser, (err) => {
         if (err) return next(err);
