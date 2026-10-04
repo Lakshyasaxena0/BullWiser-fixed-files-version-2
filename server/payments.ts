@@ -17,6 +17,7 @@ import axios from "axios";
 import type { Express, Request, Response } from "express";
 import { pool } from "./db";
 import { isAuthenticated } from "./auth";
+import { ensureReferralTables, usableCredits, redeemCredits, rewardReferrer } from "./referrals";
 
 const RAZORPAY_API = process.env.RAZORPAY_API_URL || "https://api.razorpay.com/v1";
 const keyId = () => process.env.RAZORPAY_KEY_ID || "";
@@ -56,6 +57,7 @@ function ensureTables(): Promise<void> {
       await pool.query("CREATE INDEX IF NOT EXISTS payments_user_idx ON payments (user_id)");
       await pool.query("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS currency VARCHAR NOT NULL DEFAULT 'INR'");
       await pool.query("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS payment_id INTEGER");
+      await ensureReferralTables();
     })().catch((e) => { tableReady = null; throw e; });
   }
   return tableReady;
@@ -93,6 +95,10 @@ export async function fulfillOrder(orderId: string, paymentId: string, paidAmoun
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
       [pay.user_id, plan.dbMode, plan.dbTradeType, plan.tradesPerDay, plan.duration, startTs, endTs, Math.round(pay.amount_paise / 100), pay.currency, pay.id]
     );
+    // Referral bookkeeping (same transaction): spend the credits this payment used, and
+    // reward whoever invited the buyer (their first paid payment earns the inviter a credit).
+    if (plan.creditsUsed > 0) await redeemCredits(client, pay.user_id, plan.creditsUsed, pay.id);
+    await rewardReferrer(client, pay.user_id, pay.id);
     await client.query(
       "UPDATE payments SET status='paid', razorpay_payment_id=$2, subscription_id=$3, paid_at=now(), failure_reason=NULL WHERE id=$1",
       [pay.id, paymentId, sub.rows[0].id]
@@ -125,10 +131,11 @@ export function registerPaymentRoutes(app: Express, deps: PaymentDeps) {
       const parsed = deps.parseBillingInput({ duration: "monthly", ...req.body }, kind);
       if ("error" in parsed) return res.status(400).json({ message: parsed.error });
       const v = parsed.value;
-      // referralCount from the browser is not trusted (it would be a self-service discount)
+      // Referral discount comes from the DATABASE (credits earned when friends paid) — never from the browser
+      const credits = await usableCredits(req.user.id);
       const bill = kind === "stock"
-        ? deps.calculateStock(v.mode, v.tradeType, v.tradesPerDay, v.duration, 0)
-        : deps.calculateCrypto(v.mode, v.tradesPerDay, v.cryptoValue, v.duration, 0);
+        ? deps.calculateStock(v.mode, v.tradeType, v.tradesPerDay, v.duration, credits)
+        : deps.calculateCrypto(v.mode, v.tradesPerDay, v.cryptoValue, v.duration, credits);
       const amountRupees = Math.round(bill.finalBill);
       if (!Number.isFinite(amountRupees) || amountRupees < 1) return res.status(400).json({ message: "Invalid plan price" });
       const amountPaise = amountRupees * 100;
@@ -137,6 +144,7 @@ export function registerPaymentRoutes(app: Express, deps: PaymentDeps) {
         duration: v.duration, tradesPerDay: v.tradesPerDay, mode: v.mode, tradeType: kind === "stock" ? v.tradeType : "crypto",
         dbMode: kind === "stock" ? v.mode : `crypto-${v.mode}`, dbTradeType: kind === "stock" ? v.tradeType : "crypto",
         cryptoValue: kind === "crypto" ? v.cryptoValue : undefined,
+        creditsUsed: credits,
       };
       const receipt = `bw_${req.user.id.slice(0, 8)}_${Date.now().toString(36)}`;
       const order = (await rzp("post", "/orders", { amount: amountPaise, currency: "INR", receipt, notes: { userId: req.user.id, kind, duration: v.duration } })).data;
