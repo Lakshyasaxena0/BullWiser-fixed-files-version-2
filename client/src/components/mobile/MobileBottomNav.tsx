@@ -1,66 +1,134 @@
-import { Home, TrendingUp, Briefcase, Clock, User, Eye, Bitcoin } from "lucide-react";
-import { Link, useLocation } from "wouter";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button"; // Assuming Button component is in this path
+import { Switch, Route, Redirect } from "wouter";
+import { queryClient } from "./lib/queryClient";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { Toaster } from "@/components/ui/toaster";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { useAuth } from "@/hooks/useAuth";
+import { useState, useEffect } from "react";
+import Landing from "@/pages/landing";
+import Dashboard from "@/pages/dashboard";
+import MobileDashboard from "@/pages/mobile-dashboard";
+import Predictions from "@/pages/predictions";
+import Portfolio from "@/pages/portfolio";
+import SubscriptionPage from "@/pages/subscription";
+import Notifications from "@/pages/notifications";
+import Plans from "@/pages/plans";
+import AuthPage from "@/pages/auth-page";
+import SettingsPage from "@/pages/settings";
+import NotFound from "@/pages/not-found";
+import Sidebar from "@/components/layout/sidebar";
+import Header from "@/components/layout/header";
+import ActivitiesPage from "@/pages/activities";
+import TradingHistoryPage from "@/pages/trading-history";
+import CryptoPlans from "./pages/crypto-plans";
+import MarketOutlook from "@/pages/market-outlook";
+import PredictionAnalytics from "@/pages/prediction-analytics"; // ★ NEW
 
-const navigation = [
-  { name: 'Home', href: '/dashboard', icon: Home },
-  { name: 'Predictions', href: '/predictions', icon: TrendingUp },
-  { name: 'Portfolio', href: '/portfolio', icon: Briefcase },
-  { name: 'History', href: '/history', icon: Clock },
-  { name: 'Profile', href: '/profile', icon: User },
-];
+function Router() {
+  const { isAuthenticated, isLoading } = useAuth();
+  const [isMobile, setIsMobile] = useState(false);
+  const [authTimedOut, setAuthTimedOut] = useState(false);
 
-export default function MobileBottomNav() {
-  const [location, setLocation] = useLocation();
+  useEffect(() => {
+    if (!isLoading) return;
+    const timer = setTimeout(() => setAuthTimedOut(true), 5000);
+    return () => clearTimeout(timer);
+  }, [isLoading]);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
+  if (isLoading && !authTimedOut) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <Switch>
+        <Route path="/" component={Landing} />
+        <Route path="/auth" component={AuthPage} />
+        <Route component={NotFound} />
+      </Switch>
+    );
+  }
+
+  if (isMobile) {
+    return (
+      <Switch>
+        <Route path="/" component={MobileDashboard} />
+        <Route path="/dashboard" component={MobileDashboard} />
+        <Route path="/predictions" component={Predictions} />
+        <Route path="/portfolio" component={Portfolio} />
+        <Route path="/subscription" component={SubscriptionPage} />
+        <Route path="/notifications" component={Notifications} />
+        <Route path="/market-outlook" component={MarketOutlook} />
+        <Route path="/prediction-analytics" component={PredictionAnalytics} /> {/* ★ NEW */}
+        <Route path="/settings" component={SettingsPage} />
+        <Route path="/plans" component={Plans} />
+        <Route path="/activities" component={ActivitiesPage} />
+        <Route path="/activities/:id" component={ActivitiesPage} />
+        <Route path="/trading-history" component={TradingHistoryPage} />
+        <Route path="/crypto-plans" component={CryptoPlans} />
+        {/* The bottom nav links to these; they used to be 404s on phones */}
+        <Route path="/cryptocurrencies"><Redirect to="/trading-history" /></Route>
+        <Route path="/history"><Redirect to="/trading-history" /></Route>
+        <Route path="/profile"><Redirect to="/settings" /></Route>
+        <Route path="/auth" component={AuthPage} />
+        <Route component={NotFound} />
+      </Switch>
+    );
+  }
 
   return (
-    <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-50 safe-area-bottom">
-      <nav className="flex justify-around items-center h-16">
-        {navigation.map((item) => {
-          const isActive = location === item.href;
-          const Icon = item.icon;
-
-          return (
-            <Link key={item.name} href={item.href}>
-              <a
-                className={cn(
-                  "flex flex-col items-center justify-center w-full h-full px-2 py-1 transition-colors",
-                  isActive
-                    ? "text-primary"
-                    : "text-gray-500 hover:text-gray-700"
-                )}
-                data-testid={`mobile-nav-${item.name.toLowerCase()}`}
-              >
-                <Icon className={cn("h-5 w-5", isActive && "mb-0.5")} />
-                <span className="text-xs mt-1">{item.name}</span>
-              </a>
-            </Link>
-          );
-        })}
-
-        <Button
-          variant={location === '/portfolio' ? 'default' : 'ghost'}
-          size="sm"
-          className="flex flex-col items-center p-2 h-auto min-h-[60px]"
-          onClick={() => setLocation('/portfolio')}
-          data-testid="mobile-nav-portfolio"
-        >
-          <Eye className="h-5 w-5 mb-1" />
-          <span className="text-xs">Portfolio</span>
-        </Button>
-
-        <Button
-          variant={location === '/cryptocurrencies' ? 'default' : 'ghost'}
-          size="sm"
-          className="flex flex-col items-center p-2 h-auto min-h-[60px]"
-          onClick={() => setLocation('/cryptocurrencies')}
-          data-testid="mobile-nav-crypto"
-        >
-          <Bitcoin className="h-5 w-5 mb-1" />
-          <span className="text-xs">Crypto</span>
-        </Button>
-      </nav>
+    <div className="flex h-screen bg-gray-50">
+      <Sidebar />
+      <div className="flex-1 transition-all duration-300 ease-in-out lg:ml-64" id="main-content">
+        <Header />
+        <main className="p-6 space-y-6 overflow-y-auto h-full bg-gray-50">
+          <Switch>
+            <Route path="/" component={Dashboard} />
+            <Route path="/dashboard" component={Dashboard} />
+            <Route path="/predictions" component={Predictions} />
+            <Route path="/portfolio" component={Portfolio} />
+            <Route path="/subscription" component={SubscriptionPage} />
+            <Route path="/settings" component={SettingsPage} />
+            <Route path="/notifications" component={Notifications} />
+            <Route path="/auth" component={AuthPage} />
+            <Route path="/plans" component={Plans} />
+            <Route path="/activities" component={ActivitiesPage} />
+            <Route path="/activities/:id" component={ActivitiesPage} />
+            <Route path="/trading-history" component={TradingHistoryPage} />
+            <Route path="/market-outlook" component={MarketOutlook} />
+            <Route path="/prediction-analytics" component={PredictionAnalytics} /> {/* ★ NEW */}
+            <Route path="/cryptocurrencies">
+              <Redirect to="/trading-history" />
+            </Route>
+            <Route path="/crypto-plans" component={CryptoPlans} />
+            <Route component={NotFound} />
+          </Switch>
+        </main>
+      </div>
     </div>
   );
 }
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Router />
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+}
+
+export default App;
