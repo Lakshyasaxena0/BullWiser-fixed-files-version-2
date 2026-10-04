@@ -1,4 +1,4 @@
-import { Switch, Route, Redirect } from "wouter";
+import { Switch, Route, Redirect, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -14,6 +14,8 @@ import SubscriptionPage from "@/pages/subscription";
 import Notifications from "@/pages/notifications";
 import Plans from "@/pages/plans";
 import AuthPage from "@/pages/auth-page";
+import ForgotPasswordPage from "@/pages/forgot-password";
+import ResetPasswordPage from "@/pages/reset-password";
 import SettingsPage from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 import Sidebar from "@/components/layout/sidebar";
@@ -26,6 +28,7 @@ import PredictionAnalytics from "@/pages/prediction-analytics"; // ★ NEW
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
+  const [location] = useLocation();
   const [isMobile, setIsMobile] = useState(false);
   const [authTimedOut, setAuthTimedOut] = useState(false);
 
@@ -41,6 +44,16 @@ function Router() {
     window.addEventListener("resize", checkMobile);
     return () => window.removeEventListener("resize", checkMobile);
   }, []);
+
+  // Password-reset pages work whether or not someone is logged in (the link comes from an email)
+  if (location === "/forgot-password" || location === "/reset-password") {
+    return (
+      <Switch>
+        <Route path="/forgot-password" component={ForgotPasswordPage} />
+        <Route path="/reset-password" component={ResetPasswordPage} />
+      </Switch>
+    );
+  }
 
   if (isLoading && !authTimedOut) {
     return (
