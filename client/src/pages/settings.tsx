@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -471,15 +472,15 @@ export default function SettingsPage() {
           <form onSubmit={handlePasswordSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label>Current Password</Label>
-              <Input type="password" placeholder="Enter current password" value={passwordForm.currentPassword} onChange={e => setPasswordForm(p => ({ ...p, currentPassword: e.target.value }))} required />
+              <PasswordInput placeholder="Enter current password" value={passwordForm.currentPassword} onChange={e => setPasswordForm(p => ({ ...p, currentPassword: e.target.value }))} required />
             </div>
             <div className="space-y-2">
               <Label>New Password</Label>
-              <Input type="password" placeholder="Min 6 characters" value={passwordForm.newPassword} onChange={e => setPasswordForm(p => ({ ...p, newPassword: e.target.value }))} required minLength={6} />
+              <PasswordInput placeholder="Min 6 characters" value={passwordForm.newPassword} onChange={e => setPasswordForm(p => ({ ...p, newPassword: e.target.value }))} required minLength={6} />
             </div>
             <div className="space-y-2">
               <Label>Confirm New Password</Label>
-              <Input type="password" placeholder="Re-enter new password" value={passwordForm.confirmPassword} onChange={e => setPasswordForm(p => ({ ...p, confirmPassword: e.target.value }))} required minLength={6} />
+              <PasswordInput placeholder="Re-enter new password" value={passwordForm.confirmPassword} onChange={e => setPasswordForm(p => ({ ...p, confirmPassword: e.target.value }))} required minLength={6} />
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowPasswordDialog(false)}>Cancel</Button>
