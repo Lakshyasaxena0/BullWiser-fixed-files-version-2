@@ -667,8 +667,20 @@ export function registerRoutes(app: Express): Server {
     try {
       const allPredictions = await storage.getUserPredictions(req.user.id);
       if (allPredictions.length === 0) return res.json({ weeklyAccuracy: [], totalPredictions: 0, avgAccuracy: 0 });
-      const weeklyAccuracy = [{ week: 'Week 1', accuracy: 78 + Math.random() * 15 }, { week: 'Week 2', accuracy: 82 + Math.random() * 12 }, { week: 'Week 3', accuracy: 85 + Math.random() * 10 }, { week: 'Week 4', accuracy: 87 + Math.random() * 8 }].map(item => ({ ...item, accuracy: Math.round(item.accuracy * 100) / 100 }));
-      res.json({ weeklyAccuracy, totalPredictions: allPredictions.length, avgAccuracy: 83.2 });
+      // Real accuracy: share of scored predictions (actual price known) whose actual price landed inside [predLow, predHigh]
+      const scored = allPredictions.filter(p => p.actualPrice != null && p.createdAt);
+      const hit = (p: any) => p.actualPrice >= p.predLow && p.actualPrice <= p.predHigh;
+      const DAY = 24 * 60 * 60 * 1000;
+      const nowMs = Date.now();
+      const weeklyAccuracy: { week: string; accuracy: number; predictions: number }[] = [];
+      for (let w = 3; w >= 0; w--) {
+        const from = nowMs - (w + 1) * 7 * DAY, to = nowMs - w * 7 * DAY;
+        const inWeek = scored.filter(p => { const t = new Date(p.createdAt as any).getTime(); return t >= from && t < to; });
+        if (inWeek.length === 0) continue;
+        weeklyAccuracy.push({ week: w === 0 ? 'This week' : `${w + 1} weeks ago`.replace('2 weeks ago', 'Last week'), accuracy: Math.round((inWeek.filter(hit).length / inWeek.length) * 1000) / 10, predictions: inWeek.length });
+      }
+      const avgAccuracy = scored.length ? Math.round((scored.filter(hit).length / scored.length) * 1000) / 10 : 0;
+      res.json({ weeklyAccuracy, totalPredictions: allPredictions.length, scoredPredictions: scored.length, avgAccuracy });
     } catch (error) {
       res.status(500).json({ message: "Error fetching prediction statistics" });
     }
