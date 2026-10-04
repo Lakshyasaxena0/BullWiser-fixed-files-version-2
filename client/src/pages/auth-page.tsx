@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
@@ -108,7 +109,7 @@ export default function AuthPage() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="login-password">Password</Label>
-                    <Input id="login-password" name="password" type="password" placeholder="Enter your password" required />
+                    <PasswordInput id="login-password" name="password" placeholder="Enter your password" required />
                   </div>
                   <div className="text-right -mt-2">
                     <Link href="/forgot-password" className="text-sm text-blue-600 hover:underline" data-testid="link-forgot-password">Forgot password?</Link>
@@ -142,11 +143,11 @@ export default function AuthPage() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="register-password">Password *</Label>
-                    <Input id="register-password" name="password" type="password" placeholder="Minimum 6 characters" required minLength={6} />
+                    <PasswordInput id="register-password" name="password" placeholder="Minimum 6 characters" required minLength={6} />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="confirmPassword">Confirm Password *</Label>
-                    <Input id="confirmPassword" name="confirmPassword" type="password" placeholder="Re-enter your password" required minLength={6} />
+                    <PasswordInput id="confirmPassword" name="confirmPassword" placeholder="Re-enter your password" required minLength={6} />
                   </div>
                   <Button type="submit" className="w-full" disabled={registerMutation.isPending}>
                     {registerMutation.isPending ? "Creating account..." : "Create Account"}
