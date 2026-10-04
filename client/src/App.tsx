@@ -71,6 +71,16 @@ function Router() {
         <Route path="/notifications" component={Notifications} />
         <Route path="/market-outlook" component={MarketOutlook} />
         <Route path="/prediction-analytics" component={PredictionAnalytics} /> {/* ★ NEW */}
+        <Route path="/settings" component={SettingsPage} />
+        <Route path="/plans" component={Plans} />
+        <Route path="/activities" component={ActivitiesPage} />
+        <Route path="/activities/:id" component={ActivitiesPage} />
+        <Route path="/trading-history" component={TradingHistoryPage} />
+        <Route path="/crypto-plans" component={CryptoPlans} />
+        {/* The bottom nav links to these; they used to be 404s on phones */}
+        <Route path="/cryptocurrencies"><Redirect to="/trading-history" /></Route>
+        <Route path="/history"><Redirect to="/trading-history" /></Route>
+        <Route path="/profile"><Redirect to="/settings" /></Route>
         <Route path="/auth" component={AuthPage} />
         <Route component={NotFound} />
       </Switch>
