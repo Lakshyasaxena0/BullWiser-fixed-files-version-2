@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
+import { payForPlan } from "@/lib/razorpay";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -29,7 +30,7 @@ interface BillingEstimate {
 
 export default function Plans() {
   const { toast } = useToast();
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
 
@@ -75,30 +76,26 @@ export default function Plans() {
 
   // Subscribe mutation
   const subscribeMutation = useMutation({
-    mutationFn: async () => {
-      const response = await fetch("/api/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, tradeType: riskLevel, tradesPerDay, duration }),
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error("Subscription failed");
-      return response.json();
-    },
-    onSuccess: (data) => {
-      toast({ 
-        title: "Subscription Successful!", 
-        description: `Your ${mode} plan is now active. Subscription ID: ${data.subscriptionId}` 
+    mutationFn: () =>
+      payForPlan({
+        kind: "stock",
+        plan: { mode, tradeType: riskLevel, tradesPerDay, duration },
+        prefill: { name: (user as any)?.username, email: (user as any)?.email },
+      }),
+    onSuccess: (result) => {
+      if (result.status === "cancelled") {
+        toast({ title: "Payment cancelled", description: "No money was taken." });
+        return;
+      }
+      toast({
+        title: "Payment successful!",
+        description: `Your ${mode} plan is now active. Subscription ID: ${result.subscriptionId}`,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/user/subscriptions"] });
       setTimeout(() => setLocation('/subscription'), 1500);
     },
     onError: (error: Error) => {
-      toast({ 
-        title: "Subscription Failed", 
-        description: error.message || "Please try again", 
-        variant: "destructive" 
-      });
+      toast({ title: "Payment failed", description: error.message || "Please try again", variant: "destructive" });
     },
   });
 
@@ -400,12 +397,12 @@ export default function Plans() {
               {subscribeMutation.isPending ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Processing...
+                  Opening payment...
                 </>
               ) : hasActiveSubscription ? (
-                'Update Plan'
+                `Pay ₹${(estimate?.finalBill ?? 0).toLocaleString('en-IN')} & Update Plan`
               ) : (
-                'Subscribe Now'
+                `Pay ₹${(estimate?.finalBill ?? 0).toLocaleString('en-IN')} & Subscribe`
               )}
             </Button>
           </div>
