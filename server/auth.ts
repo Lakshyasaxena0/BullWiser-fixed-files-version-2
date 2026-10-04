@@ -111,6 +111,11 @@ export function setupAuth(app: Express) {
       if (password.length < 6) {
         return res.status(400).json({ message: "Password must be at least 6 characters" });
       }
+      // An email is needed so a forgotten password can be reset by mail
+      const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return res.status(400).json({ message: "A valid email address is required (used to reset your password)" });
+      }
 
       const existing = await storage.getUserByUsername(username);
       if (existing) {
@@ -121,7 +126,7 @@ export function setupAuth(app: Express) {
       const newUser = await storage.createUser({
         username,
         password: hashedPw,
-        email: email || null,
+        email: cleanEmail,
         firstName: firstName || null,
         lastName: lastName || null,
       });
