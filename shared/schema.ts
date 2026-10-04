@@ -108,9 +108,30 @@ export const subscriptions = pgTable("subscriptions", {
   duration: varchar("duration").notNull(),
   startTs: integer("start_ts").notNull(),
   endTs: integer("end_ts").notNull(),
-  price: integer("price").notNull(),
+  price: integer("price").notNull(), // whole rupees
+  currency: varchar("currency").notNull().default("INR"),
+  paymentId: integer("payment_id"),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// Razorpay payments (amount in paise). Subscriptions are created only when a payment is verified.
+export const payments = pgTable("payments", {
+  id: serial("id").primaryKey(),
+  userId: varchar("user_id").references(() => users.id).notNull(),
+  provider: varchar("provider").notNull().default("razorpay"),
+  razorpayOrderId: varchar("razorpay_order_id").notNull().unique(),
+  razorpayPaymentId: varchar("razorpay_payment_id").unique(),
+  amountPaise: integer("amount_paise").notNull(),
+  currency: varchar("currency").notNull().default("INR"),
+  status: varchar("status").notNull().default("created"), // created | paid | failed
+  kind: varchar("kind").notNull(), // stock | crypto
+  plan: jsonb("plan").notNull(),
+  subscriptionId: integer("subscription_id"),
+  failureReason: text("failure_reason"),
+  createdAt: timestamp("created_at").defaultNow(),
+  paidAt: timestamp("paid_at"),
+});
+export type Payment = typeof payments.$inferSelect;
 
 // Feedback table
 export const feedback = pgTable("feedback", {
