@@ -307,9 +307,9 @@ export function registerRoutes(app: Express): Server {
       const { stock = 'TCS', when } = req.body;
       const userId = req.user.id;
       const userSubscriptions = await storage.getUserSubscriptions(userId);
-      const activeStockSubscription = userSubscriptions.find(sub => new Date(sub.endTs * 1000) > new Date());
+      const activeStockSubscription = userSubscriptions.find(sub => !String(sub.mode).startsWith('crypto') && new Date(sub.endTs * 1000) > new Date());
       if (!activeStockSubscription) {
-        return res.status(403).json({ message: "Active subscription required", error: "SUBSCRIPTION_REQUIRED", subscriptionType: "any" });
+        return res.status(403).json({ message: "Active stock subscription required", error: "SUBSCRIPTION_REQUIRED", subscriptionType: "stock" });
       }
       const whenDate = parseWhen(when);
       if (!whenDate) return res.status(400).json({ message: "Invalid date in 'when'" });
@@ -416,6 +416,10 @@ export function registerRoutes(app: Express): Server {
     try {
       const { crypto: cryptoSymbol = 'BTC', when, mode = 'suggestion', riskLevel = 'high' } = req.body;
       const userId = req.user.id;
+      const cryptoSubs = await storage.getUserSubscriptions(userId);
+      if (!cryptoSubs.some(sub => String(sub.mode).startsWith('crypto') && new Date(sub.endTs * 1000) > new Date())) {
+        return res.status(403).json({ message: "Active crypto subscription required", error: "SUBSCRIPTION_REQUIRED", subscriptionType: "crypto" });
+      }
       const cryptoQuote = await cryptoDataService.getCryptoQuote(cryptoSymbol.toUpperCase());
       if (!cryptoQuote) return res.status(404).json({ message: "Cryptocurrency not found" });
       
@@ -463,7 +467,7 @@ export function registerRoutes(app: Express): Server {
       const { subscriptionId, crypto: cryptoSymbol = 'BTC', when } = req.body;
       const userId = req.user.id;
       const subscription = await storage.getSubscription(subscriptionId);
-      if (!subscription || subscription.userId !== userId) return res.status(403).json({ message: "Invalid or unauthorized subscription" });
+      if (!subscription || subscription.userId !== userId || !String(subscription.mode).startsWith('crypto')) return res.status(403).json({ message: "Invalid or unauthorized subscription" });
       if (subscription.endTs < Math.floor(Date.now() / 1000)) return res.status(403).json({ message: "Subscription expired" });
       const whenDate = parseWhen(when);
       if (!whenDate) return res.status(400).json({ message: "Invalid date in 'when'" });
