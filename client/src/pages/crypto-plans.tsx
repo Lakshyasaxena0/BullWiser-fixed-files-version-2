@@ -1,85 +1,52 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
-import { payForPlan } from "@/lib/razorpay";
-import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Check, TrendingUp, Shield, Zap } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Bitcoin, Check, TrendingUp, Shield, Zap, ChevronLeft } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
+import { payForPlan } from "@/lib/razorpay";
+import { useLocation } from "wouter";
 
-type TradingMode = 'suggestion' | 'auto';
-type RiskLevel = 'low' | 'medium' | 'high';
-type Duration = 'daily' | 'weekly' | 'monthly' | 'yearly';
-
-interface BillingEstimate {
-  mode: string;
-  tradeType: string;
-  tradesPerDay: number;
-  duration: string;
-  basePrice: number;
-  afterDurationDiscount: number;
-  afterReferralDiscount: number;
-  autoModeSurcharge: number;
-  referralDiscountApplied: number;
-  durationDiscountApplied: number;
-  finalBill: number;
-}
-
-export default function Plans() {
+export default function CryptoPlans() {
+  const { user, isAuthenticated } = useAuth();
   const { toast } = useToast();
-  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
-  const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
 
-  // Form state
-  const [mode, setMode] = useState<TradingMode>('auto');
-  const [riskLevel, setRiskLevel] = useState<RiskLevel>('medium');
-  const [tradesPerDay, setTradesPerDay] = useState(5);
-  const [duration, setDuration] = useState<Duration>('monthly');
+  const [selectedPlan, setSelectedPlan] = useState({
+    mode: 'suggestion',
+    tradesPerDay: 5,
+    cryptoValue: 50000,
+    duration: 'monthly'
+  });
 
-  // Redirect if not authenticated
-  useEffect(() => {
-    if (!authLoading && !isAuthenticated) {
-      toast({ title: "Please log in", description: "You need to be logged in to view plans", variant: "destructive" });
-      setTimeout(() => { window.location.href = "/api/login"; }, 500);
-    }
-  }, [isAuthenticated, authLoading, toast]);
-
-  // Fetch current subscriptions
+  // Get current subscriptions
   const { data: subscriptions } = useQuery<any[]>({
     queryKey: ["/api/user/subscriptions"],
     enabled: isAuthenticated,
   });
 
-  // Check if user has active subscription
-  const activeSubscription = subscriptions?.find(s => new Date(s.endTs * 1000) > new Date());
-  const hasActiveSubscription = !!activeSubscription;
-
-  // Fetch billing estimate
-  const { data: estimate, isLoading: estimateLoading } = useQuery<BillingEstimate>({
-    queryKey: ["/api/billing/estimate", { mode, tradeType: riskLevel, tradesPerDay, duration }],
+  // Get crypto billing estimate (apiRequest returns a raw Response, so parse it)
+  const { data: estimate } = useQuery<any>({
+    queryKey: ["/api/billing/crypto/estimate", selectedPlan],
     queryFn: async () => {
-      const response = await fetch("/api/billing/estimate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, tradeType: riskLevel, tradesPerDay, duration }),
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error("Failed to fetch estimate");
-      return response.json();
+      const res = await apiRequest('POST', '/api/billing/crypto/estimate', selectedPlan);
+      return await res.json();
     },
-    enabled: isAuthenticated,
   });
 
   // Subscribe mutation
   const subscribeMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (planData: any) =>
       payForPlan({
-        kind: "stock",
-        plan: { mode, tradeType: riskLevel, tradesPerDay, duration },
+        kind: "crypto",
+        plan: planData,
         prefill: { name: (user as any)?.username, email: (user as any)?.email },
       }),
     onSuccess: (result) => {
@@ -89,338 +56,353 @@ export default function Plans() {
       }
       toast({
         title: "Payment successful!",
-        description: `Your ${mode} plan is now active. Subscription ID: ${result.subscriptionId}`,
+        description: "Your crypto trading plan is now active.",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/user/subscriptions"] });
-      setTimeout(() => setLocation('/subscription'), 1500);
     },
     onError: (error: Error) => {
-      toast({ title: "Payment failed", description: error.message || "Please try again", variant: "destructive" });
+      toast({
+        title: "Payment failed",
+        description: error.message || "There was an error processing your payment.",
+        variant: "destructive",
+      });
     },
   });
 
-  if (authLoading) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
-  }
+  const activeCryptoSubscription = subscriptions?.find(
+    sub => sub.mode.includes('crypto') && new Date(sub.endTs * 1000) > new Date()
+  );
 
-  const handleSubscribe = () => {
-    subscribeMutation.mutate();
-  };
-
-  const modeFeatures = {
+  const planFeatures = {
     suggestion: [
-      "AI-powered stock suggestions",
-      "Technical analysis insights",
-      "Risk assessment",
-      "Basic market alerts",
+      "AI-powered crypto predictions",
+      "Real-time market analysis",
+      "Technical indicators",
+      "Risk assessment alerts",
+      "Portfolio tracking"
     ],
     auto: [
       "All suggestion features",
       "Automated trading signals",
       "Advanced risk management",
       "Priority market alerts",
-      "Portfolio optimization",
-    ],
+      "24/7 monitoring",
+      "Instant notifications"
+    ]
   };
 
+  const cryptoValueTiers = [
+    { value: 10000, label: "₹10,000 - Starter" },
+    { value: 25000, label: "₹25,000 - Basic" },
+    { value: 50000, label: "₹50,000 - Standard" },
+    { value: 100000, label: "₹1,00,000 - Premium" },
+    { value: 250000, label: "₹2,50,000 - Pro" },
+    { value: 500000, label: "₹5,00,000 - Elite" }
+  ];
+
   return (
-    <div className="space-y-6 pb-8">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Subscription Plans</h1>
-        <p className="text-gray-600">Choose the perfect plan for your trading needs</p>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setLocation('/cryptocurrencies')}
+            className="flex items-center"
+          >
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Back to Crypto
+          </Button>
+          <div className="border-l pl-4">
+            <h1 className="text-2xl font-bold text-gray-900 flex items-center">
+              <Bitcoin className="h-6 w-6 mr-2 text-orange-500" />
+              Crypto Trading Plans
+            </h1>
+            <p className="text-gray-600">Choose the perfect plan for cryptocurrency trading</p>
+          </div>
+        </div>
       </div>
 
-      {/* Active Subscription Banner */}
-      {hasActiveSubscription && (
-        <Card className="border-green-200 bg-green-50">
-          <CardContent className="pt-6">
+      {/* Current Plan Status */}
+      {activeCryptoSubscription && (
+        <Card className="border-orange-500 bg-orange-50">
+          <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center">
-                  <Check className="h-6 w-6 text-white" />
-                </div>
+                <Bitcoin className="h-6 w-6 text-orange-500" />
                 <div>
-                  <p className="font-semibold text-green-900">Active Subscription</p>
-                  <p className="text-sm text-green-700">
-                    {activeSubscription.mode} • {activeSubscription.duration} • 
-                    {Math.max(0, Math.ceil((activeSubscription.endTs * 1000 - Date.now()) / (1000 * 60 * 60 * 24)))} days remaining
+                  <CardTitle className="text-orange-700">Active Crypto Plan</CardTitle>
+                  <p className="text-gray-600">
+                    {activeCryptoSubscription.mode} • {activeCryptoSubscription.tradesPerDay} trades/day
                   </p>
                 </div>
               </div>
-              <Button variant="outline" onClick={() => setLocation('/subscription')}>
-                View Details
-              </Button>
+              <Badge className="bg-green-100 text-green-800">Active</Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <p className="text-sm text-gray-600">Price</p>
+                <p className="text-lg font-semibold">₹{activeCryptoSubscription.price}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600">Duration</p>
+                <p className="text-lg font-semibold">{activeCryptoSubscription.duration}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600">Expires</p>
+                <p className="text-lg font-semibold">
+                  {new Date(activeCryptoSubscription.endTs * 1000).toLocaleDateString()}
+                </p>
+              </div>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Plan Configuration */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Configure Your Plan</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Trading Mode */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Trading Mode</label>
-            <Select value={mode} onValueChange={(v) => setMode(v as TradingMode)}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="suggestion">
-                  <div className="flex items-center space-x-2">
-                    <TrendingUp className="h-4 w-4" />
-                    <span>Suggestion Mode</span>
-                  </div>
-                </SelectItem>
-                <SelectItem value="auto">
-                  <div className="flex items-center space-x-2">
-                    <Zap className="h-4 w-4" />
-                    <span>Auto Mode</span>
-                  </div>
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-gray-500">
-              {mode === 'suggestion' ? 'Get AI recommendations' : 'Automated signals for direct trading'}
-            </p>
-          </div>
-
-          {/* Risk Level */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Risk Level</label>
-            <Select value={riskLevel} onValueChange={(v) => setRiskLevel(v as RiskLevel)}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="low">
-                  <div className="flex items-center justify-between w-full">
-                    <span>🛡️ Balanced (Low Risk)</span>
-                  </div>
-                </SelectItem>
-                <SelectItem value="medium">
-                  <div className="flex items-center justify-between w-full">
-                    <span>⚖️ Balanced (Medium Risk)</span>
-                  </div>
-                </SelectItem>
-                <SelectItem value="high">
-                  <div className="flex items-center justify-between w-full">
-                    <span>🚀 Aggressive (High Risk)</span>
-                  </div>
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Trades Per Day */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Trades Per Day</label>
-            <Select value={tradesPerDay.toString()} onValueChange={(v) => setTradesPerDay(parseInt(v))}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
-                  <SelectItem key={num} value={num.toString()}>
-                    {num} trades/day
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Billing Period */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Billing Period</label>
-            <Select value={duration} onValueChange={(v) => setDuration(v as Duration)}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="daily">Daily</SelectItem>
-                <SelectItem value="weekly">Weekly (5% off)</SelectItem>
-                <SelectItem value="monthly">Monthly (10% off)</SelectItem>
-                <SelectItem value="yearly">Yearly (20% off)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Plan Features */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Plan Features</label>
-            <div className="space-y-2">
-              {modeFeatures[mode].map((feature, index) => (
-                <div key={index} className="flex items-center space-x-2">
-                  <Check className="h-4 w-4 text-green-600" />
-                  <span className="text-sm">{feature}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Plan Summary */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Plan Summary</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {estimateLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
-            </div>
-          ) : estimate ? (
-            <>
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">Base Price</span>
-                  <span className="font-medium">₹{estimate.basePrice.toLocaleString()}</span>
-                </div>
-                {estimate.durationDiscountApplied > 0 && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-green-600">Duration Discount ({estimate.durationDiscountApplied}%)</span>
-                    <span className="text-green-600">-₹{(estimate.basePrice - estimate.afterDurationDiscount).toLocaleString()}</span>
-                  </div>
-                )}
-                {estimate.autoModeSurcharge > 0 && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Auto Mode Surcharge</span>
-                    <span className="font-medium">+₹{estimate.autoModeSurcharge.toLocaleString()}</span>
-                  </div>
-                )}
-              </div>
-
-              <div className="pt-4 border-t">
-                <div className="flex justify-between items-center">
-                  <span className="text-lg font-bold">Total</span>
-                  <span className="text-2xl font-bold text-primary">₹{estimate.finalBill.toLocaleString()}</span>
-                </div>
-              </div>
-
-              <div className="pt-4 space-y-2 text-xs text-gray-600">
-                <div className="flex justify-between">
-                  <span>Mode:</span>
-                  <span className="font-medium capitalize">{mode}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Risk Level:</span>
-                  <span className="font-medium capitalize">{riskLevel}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Trades:</span>
-                  <span className="font-medium">{tradesPerDay} per day</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Duration:</span>
-                  <span className="font-medium capitalize">{duration}</span>
-                </div>
-              </div>
-            </>
-          ) : (
-            <p className="text-center text-gray-500">Unable to load estimate</p>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Mode Comparison */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card className={mode === 'suggestion' ? 'border-primary' : ''}>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Plan Configuration */}
+        <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <TrendingUp className="h-5 w-5" />
-                <CardTitle className="text-lg">Suggestion Mode</CardTitle>
-              </div>
-              {mode === 'suggestion' && <Badge>Selected</Badge>}
-            </div>
+            <CardTitle>Configure Your Crypto Plan</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {modeFeatures.suggestion.map((feature, index) => (
-              <div key={index} className="flex items-center space-x-2">
-                <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
-                <span className="text-sm">{feature}</span>
+          <CardContent className="space-y-6">
+            {/* Mode Selection */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">Trading Mode</label>
+              <Select value={selectedPlan.mode} onValueChange={(value) => setSelectedPlan({...selectedPlan, mode: value})}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="suggestion">Suggestion Mode</SelectItem>
+                  <SelectItem value="auto">Auto Mode (50% Premium)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-gray-500 mt-1">
+                {selectedPlan.mode === 'auto' ? 'Automated crypto trading signals' : 'AI-powered crypto recommendations'}
+              </p>
+            </div>
+
+            {/* Crypto Value */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">Expected Crypto Portfolio Value</label>
+              <Select 
+                value={selectedPlan.cryptoValue.toString()} 
+                onValueChange={(value) => setSelectedPlan({...selectedPlan, cryptoValue: parseInt(value)})}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {cryptoValueTiers.map(tier => (
+                    <SelectItem key={tier.value} value={tier.value.toString()}>
+                      {tier.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-gray-500 mt-1">
+                Higher portfolio values get better multipliers
+              </p>
+            </div>
+
+            {/* Trades Per Day */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">Crypto Trades Per Day</label>
+              <Select 
+                value={selectedPlan.tradesPerDay.toString()} 
+                onValueChange={(value) => setSelectedPlan({...selectedPlan, tradesPerDay: parseInt(value)})}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="2">2 trades/day</SelectItem>
+                  <SelectItem value="5">5 trades/day</SelectItem>
+                  <SelectItem value="10">10 trades/day</SelectItem>
+                  <SelectItem value="20">20 trades/day</SelectItem>
+                  <SelectItem value="50">50 trades/day</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-gray-500 mt-1">
+                ₹50 per trade per day
+              </p>
+            </div>
+
+            {/* Duration */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">Billing Period</label>
+              <Select value={selectedPlan.duration} onValueChange={(value) => setSelectedPlan({...selectedPlan, duration: value})}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="daily">Daily</SelectItem>
+                  <SelectItem value="weekly">Weekly (5% off)</SelectItem>
+                  <SelectItem value="monthly">Monthly (10% off)</SelectItem>
+                  <SelectItem value="yearly">Yearly (20% off)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Features */}
+            <div>
+              <h4 className="font-medium mb-3">Plan Features</h4>
+              <div className="space-y-2">
+                {planFeatures[selectedPlan.mode as keyof typeof planFeatures].map((feature, index) => (
+                  <div key={index} className="flex items-center space-x-2">
+                    <Check className="h-4 w-4 text-green-600" />
+                    <span className="text-sm">{feature}</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
           </CardContent>
         </Card>
 
-        <Card className={mode === 'auto' ? 'border-primary' : ''}>
+        {/* Pricing & Checkout */}
+        <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <Zap className="h-5 w-5" />
-                <CardTitle className="text-lg">Auto Mode</CardTitle>
-              </div>
-              {mode === 'auto' && <Badge>Selected</Badge>}
-            </div>
+            <CardTitle>Crypto Plan Summary</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {modeFeatures.auto.map((feature, index) => (
-              <div key={index} className="flex items-center space-x-2">
-                <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
-                <span className="text-sm">{feature}</span>
+          <CardContent className="space-y-6">
+            {!estimate ? (
+              <div className="space-y-4">
+                <div className="p-4 bg-gray-50 rounded-lg space-y-3">
+                  <div className="animate-pulse space-y-3">
+                    <div className="h-4 bg-gray-300 rounded w-3/4"></div>
+                    <div className="h-4 bg-gray-300 rounded w-1/2"></div>
+                    <div className="h-4 bg-gray-300 rounded w-2/3"></div>
+                  </div>
+                </div>
+                <div className="text-center text-gray-500">
+                  Calculating crypto plan pricing...
+                </div>
               </div>
-            ))}
+            ) : (
+              <div className="space-y-4">
+                <div className="p-4 bg-orange-50 rounded-lg space-y-3 border border-orange-200">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-700">Base Price</span>
+                    <span className="font-semibold">₹{estimate.basePrice}</span>
+                  </div>
+
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-700">Trade Cost ({estimate.tradesPerDay} × ₹50)</span>
+                    <span className="font-semibold">₹{estimate.tradePrice}</span>
+                  </div>
+
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-700">Value Multiplier (₹{estimate.cryptoValue?.toLocaleString()})</span>
+                    <span className="font-semibold text-blue-600">×{estimate.valueMultiplier}</span>
+                  </div>
+
+                  {estimate.modeMultiplier > 1 && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-700">Auto Mode Premium</span>
+                      <span className="font-semibold text-purple-600">×{estimate.modeMultiplier}</span>
+                    </div>
+                  )}
+
+                  {estimate.durationDiscountApplied > 0 && (
+                    <div className="flex justify-between items-center text-green-600">
+                      <span>Duration Discount ({estimate.durationDiscountApplied}%)</span>
+                      <span className="font-semibold">-₹{estimate.subtotal - estimate.afterDurationDiscount}</span>
+                    </div>
+                  )}
+
+                  {estimate.autoModeSurcharge > 0 && (
+                    <div className="flex justify-between items-center text-red-600">
+                      <span>Auto Mode Surcharge (Risk Premium)</span>
+                      <span className="font-semibold">+₹{estimate.autoModeSurcharge}</span>
+                    </div>
+                  )}
+
+                  <hr className="border-orange-300" />
+                  <div className="flex justify-between items-center font-bold text-lg">
+                    <span className="text-gray-800">Total Amount</span>
+                    <span className="text-orange-600">₹{estimate.finalBill}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <div className="text-gray-600">Mode</div>
+                    <div className="font-semibold capitalize">{selectedPlan.mode}</div>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <div className="text-gray-600">Duration</div>
+                    <div className="font-semibold capitalize">{selectedPlan.duration}</div>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <div className="text-gray-600">Crypto Value</div>
+                    <div className="font-semibold">₹{selectedPlan.cryptoValue.toLocaleString()}</div>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <div className="text-gray-600">Daily Trades</div>
+                    <div className="font-semibold">{selectedPlan.tradesPerDay}</div>
+                  </div>
+                </div>
+
+                <Button
+                  className="w-full bg-orange-500 hover:bg-orange-600 text-white font-semibold py-3"
+                  size="lg"
+                  onClick={() => subscribeMutation.mutate(selectedPlan)}
+                  disabled={subscribeMutation.isPending || !!activeCryptoSubscription}
+                >
+                  {subscribeMutation.isPending ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                      Opening payment...
+                    </>
+                  ) : activeCryptoSubscription ? (
+                    "✓ Crypto Plan Active"
+                  ) : (
+                    `Pay ₹${(estimate?.finalBill ?? 0).toLocaleString('en-IN')} & Subscribe`
+                  )}
+                </Button>
+
+                {activeCryptoSubscription && (
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                    <p className="text-sm text-green-700 text-center">
+                      ✓ You have an active crypto subscription. New plans will be available after expiry.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Subscribe Button */}
-      <Card className="bg-gradient-to-r from-primary/5 to-primary/10 border-primary/20">
-        <CardContent className="pt-6">
-          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-            <div>
-              <h3 className="font-semibold text-lg">
-                {hasActiveSubscription ? 'Update Your Plan' : 'Start Your Journey'}
-              </h3>
-              <p className="text-sm text-gray-600">
-                {hasActiveSubscription 
-                  ? 'Upgrade or modify your current subscription'
-                  : 'Get access to AI-powered predictions and market outlook'}
-              </p>
+      {/* Pricing Explanation */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Crypto Billing Breakdown</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="text-center p-4 border rounded-lg">
+              <h4 className="font-medium text-orange-600">Base Price</h4>
+              <p className="text-2xl font-bold">₹500</p>
+              <p className="text-sm text-gray-500">Fixed base cost</p>
             </div>
-            <Button
-              size="lg"
-              className="w-full md:w-auto"
-              onClick={handleSubscribe}
-              disabled={subscribeMutation.isPending}
-            >
-              {subscribeMutation.isPending ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Opening payment...
-                </>
-              ) : hasActiveSubscription ? (
-                `Pay ₹${(estimate?.finalBill ?? 0).toLocaleString('en-IN')} & Update Plan`
-              ) : (
-                `Pay ₹${(estimate?.finalBill ?? 0).toLocaleString('en-IN')} & Subscribe`
-              )}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Disclaimer */}
-      <Card className="bg-amber-50 border-amber-200">
-        <CardContent className="pt-6">
-          <div className="flex items-start space-x-3">
-            <Shield className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
-            <div className="text-sm text-amber-800">
-              <p className="font-medium mb-1">Investment Disclaimer</p>
-              <p className="text-xs">
-                BullWiser combines statistical analysis (RSI, MACD, Moving Averages) and Vedic astrology 
-                in a 50/50 model. This is not financial advice. Always do your own research before investing. 
-                Past performance does not guarantee future results.
-              </p>
+            <div className="text-center p-4 border rounded-lg">
+              <h4 className="font-medium text-blue-600">Per Trade</h4>
+              <p className="text-2xl font-bold">₹50</p>
+              <p className="text-sm text-gray-500">Per trade per day</p>
+            </div>
+            <div className="text-center p-4 border rounded-lg">
+              <h4 className="font-medium text-purple-600">Value Multiplier</h4>
+              <p className="text-2xl font-bold">Per ₹1K</p>
+              <p className="text-sm text-gray-500">Portfolio value based</p>
+            </div>
+            <div className="text-center p-4 border rounded-lg">
+              <h4 className="font-medium text-green-600">Auto Premium</h4>
+              <p className="text-2xl font-bold">+50%</p>
+              <p className="text-sm text-gray-500">Auto mode surcharge</p>
             </div>
           </div>
         </CardContent>
