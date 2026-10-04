@@ -3,7 +3,10 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    // Prefer the server's own readable message (e.g. {"message":"Active crypto subscription required"})
+    let readable = '';
+    try { const j = JSON.parse(text); if (j && typeof j.message === 'string') readable = j.message; } catch { /* not JSON */ }
+    throw new Error(readable || `${res.status}: ${text}`);
   }
 }
 
