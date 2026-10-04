@@ -120,7 +120,8 @@ export function resolveDirection(
 export function scoreOutcome(pred: any, actualPrice: number): { aiLearning: string | null; finalCorrect: boolean | null; deviation: number } {
   const cur = Number(pred.currentPrice);
   const mid = (Number(pred.predLow) + Number(pred.predHigh)) / 2;
-  const deviation = Math.round((actualPrice - mid) * 100) / 100;
+  // Percent, because the analytics page shows predictions.deviation as a % (actual vs predicted midpoint)
+  const deviation = mid > 0 ? Math.round(((actualPrice - mid) / mid) * 10000) / 100 : 0;
   const snap = parseSnapshot(pred.aiLearning);
   if (!snap || !(cur > 0)) return { aiLearning: null, finalCorrect: null, deviation };
 
