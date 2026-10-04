@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, hashPassword, comparePasswords } from "./auth";
+import { registerPasswordResetRoutes } from "./passwordReset";
 import { insertSubscriptionSchema, insertFeedbackSchema, insertPredictionSchema, insertWatchlistSchema } from "@shared/schema";
 import { stockDataService } from "./stockDataService";
 import { cryptoDataService } from "./cryptoDataService";
@@ -232,6 +233,7 @@ async function runRealTraining() {
 
 export function registerRoutes(app: Express): Server {
   setupAuth(app);
+  registerPasswordResetRoutes(app);
 
   app.get('/api/warmup', async (req, res) => {
     try {
