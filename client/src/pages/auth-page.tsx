@@ -10,7 +10,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
 import { TrendingUp, Shield, Zap } from "lucide-react";
 import { BullWiserLogo } from "@/components/BullWiserLogo";
-import { useLocation } from "wouter";
+import { useLocation, Link } from "wouter";
 
 export default function AuthPage() {
   const { toast } = useToast();
@@ -110,6 +110,9 @@ export default function AuthPage() {
                     <Label htmlFor="login-password">Password</Label>
                     <Input id="login-password" name="password" type="password" placeholder="Enter your password" required />
                   </div>
+                  <div className="text-right -mt-2">
+                    <Link href="/forgot-password" className="text-sm text-blue-600 hover:underline" data-testid="link-forgot-password">Forgot password?</Link>
+                  </div>
                   <Button type="submit" className="w-full" disabled={loginMutation.isPending}>
                     {loginMutation.isPending ? "Logging in..." : "Login"}
                   </Button>
@@ -133,8 +136,9 @@ export default function AuthPage() {
                     <Input id="register-username" name="username" type="text" placeholder="Choose a username" required />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="email">Email</Label>
-                    <Input id="email" name="email" type="email" placeholder="john@example.com" />
+                    <Label htmlFor="email">Email *</Label>
+                    <Input id="email" name="email" type="email" placeholder="john@example.com" required />
+                    <p className="text-xs text-gray-500">Used to reset your password if you forget it.</p>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="register-password">Password *</Label>
