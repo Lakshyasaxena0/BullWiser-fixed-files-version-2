@@ -524,6 +524,8 @@ export class AdvancedAstrologyService {
   }
 
   private calculateHouses(ascendant: string): House[] {
+    // Deterministic strength by house type (no randomness)
+    const HOUSE_STRENGTH = [80, 65, 55, 80, 85, 45, 80, 35, 85, 80, 70, 35];
     const signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
                    'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'];
     
@@ -546,7 +548,7 @@ export class AdvancedAstrologyService {
         sign,
         lord: lords[sign as keyof typeof lords],
         planets: [],
-        strength: Math.random() * 100 // To be calculated properly
+        strength: HOUSE_STRENGTH[i] // classical house classes: trikona > kendra > 2/11 > 3/6 > dusthana
       });
     }
     
