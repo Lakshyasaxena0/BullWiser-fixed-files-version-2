@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { BullWiserLogo } from "@/components/BullWiserLogo";
@@ -78,12 +79,12 @@ export default function ResetPasswordPage() {
             <form onSubmit={submit} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="new-password">New password</Label>
-                <Input id="new-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                <PasswordInput id="new-password" value={password} onChange={(e) => setPassword(e.target.value)}
                   minLength={6} required autoComplete="new-password" placeholder="Minimum 6 characters" data-testid="input-new-password" />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="confirm-password">Confirm new password</Label>
-                <Input id="confirm-password" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)}
+                <PasswordInput id="confirm-password" value={confirm} onChange={(e) => setConfirm(e.target.value)}
                   minLength={6} required autoComplete="new-password" placeholder="Re-enter your password" data-testid="input-confirm-password" />
               </div>
               {error && <p className="text-sm text-red-600" data-testid="text-reset-error">{error}</p>}
