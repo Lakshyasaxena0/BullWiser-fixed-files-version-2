@@ -102,6 +102,15 @@ const NSE_COMPANY_NAMES: Record<string, string> = {
   'IDBI':       'IDBI Bank Ltd.',
 };
 
+
+// Deterministic pseudo-random fraction in [0,1) from symbol + hour (no Math.random)
+function seededFraction(symbol: string, hour: number): number {
+  let x = 0;
+  for (const c of symbol) x = (x * 31 + c.charCodeAt(0)) >>> 0;
+  x = Math.imul(x ^ (hour * 40503), 2654435761) >>> 0;
+  return (x % 1000) / 1000;
+}
+
 function calculateAstrologyBias(symbol: string): { bias: number; hora: string } {
   const hour = new Date().getHours();
   const horaRulers = [
@@ -111,17 +120,18 @@ function calculateAstrologyBias(symbol: string): { bias: number; hora: string } 
     'Sun', 'Venus', 'Mercury'
   ];
   const currentHora = horaRulers[hour];
+  const rnd = seededFraction(symbol, hour);
   const symbolHash = symbol.charCodeAt(0) + symbol.length;
   const horaIndex = horaRulers.indexOf(currentHora);
   let bias = ((symbolHash * horaIndex) % 11) - 5;
   switch (currentHora) {
-    case 'Jupiter': bias += Math.random() > 0.5 ? 2 : 1; break;
-    case 'Venus':   bias += Math.random() > 0.6 ? 1 : 0; break;
-    case 'Saturn':  bias -= Math.random() > 0.5 ? 2 : 1; break;
-    case 'Mars':    bias += Math.random() > 0.5 ? 1 : -1; break;
-    case 'Mercury': bias += Math.random() > 0.7 ? 1 : 0; break;
-    case 'Moon':    bias += (Math.random() - 0.5) * 2; break;
-    case 'Sun':     bias += Math.random() > 0.6 ? 1 : 0; break;
+    case 'Jupiter': bias += rnd > 0.5 ? 2 : 1; break;
+    case 'Venus':   bias += rnd > 0.6 ? 1 : 0; break;
+    case 'Saturn':  bias -= rnd > 0.5 ? 2 : 1; break;
+    case 'Mars':    bias += rnd > 0.5 ? 1 : -1; break;
+    case 'Mercury': bias += rnd > 0.7 ? 1 : 0; break;
+    case 'Moon':    bias += (rnd - 0.5) * 2; break;
+    case 'Sun':     bias += rnd > 0.6 ? 1 : 0; break;
   }
   bias = Math.max(-5, Math.min(5, Math.round(bias)));
   return { bias, hora: currentHora };
@@ -129,12 +139,11 @@ function calculateAstrologyBias(symbol: string): { bias: number; hora: string } 
 
 function applyAstrologyBias(quote: StockQuote): StockQuote {
   const { bias, hora } = calculateAstrologyBias(quote.symbol);
-  const biasMultiplier = 1 + (bias * 0.002);
-  return {
+    return {
     ...quote,
     astrologyBias: bias,
     horaInfluence: hora,
-    adjustedPrice: Math.round(quote.lastPrice * biasMultiplier * 100) / 100,
+    adjustedPrice: quote.lastPrice, // real market price — astro bias is a signal only, never alters price
   };
 }
 
@@ -323,19 +332,17 @@ export class StockDataService {
       }, { validateResult: false });
       const data = result?.quotes || [];
       if (!data || data.length === 0) return [];
-      const { bias } = calculateAstrologyBias(symbol);
-      const biasMultiplier = 1 + (bias * 0.001);
       const historicalData = data.map((entry: any) => ({
         date:                entry.date,
-        open:                (entry.open ?? 0) * biasMultiplier,
-        high:                (entry.high ?? 0) * biasMultiplier,
-        low:                 (entry.low ?? 0) * biasMultiplier,
-        close:               (entry.close ?? 0) * biasMultiplier,
+        open:                (entry.open ?? 0) ,
+        high:                (entry.high ?? 0) ,
+        low:                 (entry.low ?? 0) ,
+        close:               (entry.close ?? 0) ,
         volume:              entry.volume ?? 0,
-        CH_CLOSING_PRICE:    (entry.close ?? 0) * biasMultiplier,
-        CH_OPENING_PRICE:    (entry.open ?? 0) * biasMultiplier,
-        CH_TRADE_HIGH_PRICE: (entry.high ?? 0) * biasMultiplier,
-        CH_TRADE_LOW_PRICE:  (entry.low ?? 0) * biasMultiplier,
+        CH_CLOSING_PRICE:    (entry.close ?? 0) ,
+        CH_OPENING_PRICE:    (entry.open ?? 0) ,
+        CH_TRADE_HIGH_PRICE: (entry.high ?? 0) ,
+        CH_TRADE_LOW_PRICE:  (entry.low ?? 0) ,
         CH_TOT_TRADED_QTY:   entry.volume ?? 0,
         CH_TIMESTAMP:        entry.date,
       }));
