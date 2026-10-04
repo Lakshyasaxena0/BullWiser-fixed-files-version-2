@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, hashPassword, comparePasswords } from "./auth";
 import { registerPasswordResetRoutes } from "./passwordReset";
+import { registerPaymentRoutes } from "./payments";
 import { insertSubscriptionSchema, insertFeedbackSchema, insertPredictionSchema, insertWatchlistSchema } from "@shared/schema";
 import { stockDataService } from "./stockDataService";
 import { cryptoDataService } from "./cryptoDataService";
@@ -234,6 +235,7 @@ async function runRealTraining() {
 export function registerRoutes(app: Express): Server {
   setupAuth(app);
   registerPasswordResetRoutes(app);
+  registerPaymentRoutes(app, { parseBillingInput, calculateStock: calculateBullwiserPrice, calculateCrypto: calculateCryptoBillingPrice });
 
   app.get('/api/warmup', async (req, res) => {
     try {
@@ -571,7 +573,12 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+  // Subscriptions are created ONLY after a verified Razorpay payment (server/payments.ts).
+  // Set ALLOW_FREE_SUBSCRIPTIONS=true for local development only.
+  const freeSubsAllowed = () => process.env.ALLOW_FREE_SUBSCRIPTIONS === 'true' && process.env.NODE_ENV !== 'production';
+
   app.post('/api/subscribe', isAuthenticated, async (req: any, res) => {
+    if (!freeSubsAllowed()) return res.status(402).json({ message: 'Payment required. Use /api/payments/create-order.' });
     try {
       const userId = req.user.id;
       const parsed = parseBillingInput({ duration: 'monthly', ...req.body }, 'stock');
@@ -589,6 +596,7 @@ export function registerRoutes(app: Express): Server {
   });
 
   app.post('/api/crypto/subscribe', isAuthenticated, async (req: any, res) => {
+    if (!freeSubsAllowed()) return res.status(402).json({ message: 'Payment required. Use /api/payments/create-order.' });
     try {
       const userId = req.user.id;
       const parsed = parseBillingInput({ duration: 'monthly', ...req.body }, 'crypto');
